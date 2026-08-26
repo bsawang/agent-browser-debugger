@@ -59,13 +59,24 @@ python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
    const c=d?.querySelector('.lg-node-content');
    return JSON.stringify(c?[...c.children].map(x=>String(x.className).slice(0,40)):null);})()
   ```
-- 页面 video/img 元素、触发执行、居中节点等见 `docs/commands.md`
+- 触发执行 / 居中节点 / 页面 video 元素 / 后端状态等更多命令见 `docs/comfy/commands.md`
 
 ## 约定 ⚠️
 - **只观察 + 临时调试**：不保存工作流、不改浏览器设置/配置/书签/扩展
 - **不自行启动/重启浏览器**：用户浏览器常态运行；确需重启时提示用户操作，不代劳
 - 临时 JS 注入只在该页面进程内生效，刷新即还原；结束不留痕
 - 需要改动用户浏览器持久内容（保存工作流、改设置等）时，**先征得用户同意**
+
+## 命令归档规约 ⚠️
+调试中遇到的**新可复用命令 / 新坑，定案后归档到 agent-browser-debugger 项目对应文档**（追加，不覆盖）：
+
+| 命令类型 | 归档位置 |
+|---|---|
+| 调试本身（Chrome/CDP 通用） | `E:\work\ai\agent-browser-debugger\docs\commands.md` |
+| **ComfyUI 专题**（观察 JS、执行、重启、节点/预览坑） | `E:\work\ai\agent-browser-debugger\docs\comfy\commands.md` |
+| Chrome 远程调试原理与配置 | `E:\work\ai\agent-browser-debugger\docs\setup.md` |
+
+SKILL.md 只放触发/工作流/约定，具体命令一律归档到上述文档；新条目一句话（命令 + 用途）即可。
 
 ## 脚本
 `scripts/cdp.py` — 单次命令（单连接）：`list` / `eval` / `multi` / `shot`
