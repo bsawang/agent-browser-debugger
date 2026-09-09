@@ -28,6 +28,17 @@ def default_user_data_dir():
     return os.path.join(local, "Google", "Chrome", "User Data")
 
 
+def select_target(pages):
+    """目标页选择：CDP_TARGET（URL 子串，调试任意应用）→ 8188（ComfyUI 常用）→ 第一个 tab。"""
+    env = os.environ.get("CDP_TARGET", "").strip()
+    needles = [env] if env else ["8188"]
+    for n in needles:
+        for p in pages:
+            if n in p.get("url", ""):
+                return p
+    return pages[0]
+
+
 async def get_browser_ws_url():
     ap = os.path.join(default_user_data_dir(), "DevToolsActivePort")
     if os.path.isfile(ap):
@@ -107,7 +118,7 @@ async def main():
     if not pages:
         print("no page tab")
         return
-    target = next((p for p in pages if "8188" in p.get("url", "")), pages[0])
+    target = select_target(pages)
     await c.attach_page(target["targetId"])
     print(f"[proxy] connected ({mode}) to {target.get('url', '')} | listen :{PORT}")
 
