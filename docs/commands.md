@@ -1,68 +1,80 @@
-# 调试命令（Chrome / CDP）
+# 调试命令速查
 
 ## 前置
 
 用户 Chrome 已开启远程调试（`chrome://inspect/#remote-debugging` 勾选，或传统 `--remote-debugging-port`）。
-python 需 aiohttp（系统 python 缺则用 ComfyUI 运行副本 `H:\ComfyUI_Windows_portable\python_standalone\python.exe`）。
+Python 需 aiohttp（`pip install aiohttp`）。
 
-## ⚠️ 硬性要求：一律走常驻代理长连接
-
-一次调试少则 4~5 条命令；单次命令每条都是新连接、各弹一次授权。**即使再小的调试也只用常驻代理**，禁止直接调 `cdp.py`。
-
-## 常驻代理（唯一方式）
+## 快速探测（不弹授权）
 
 ```bash
-# 0. 确保代理在跑（没跑就起，起时弹一次授权；Chrome 重启后需重起）
-curl -s -m 2 http://127.0.0.1:9333/ -d '{"pages":1}' >/dev/null 2>&1 \
-  || (python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 > <repo>/_cdp_proxy.log 2>&1 &)
-sleep 1
-
-# 1. 通过本地端口发命令（连接保持，不弹窗）
-curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
-curl -s http://127.0.0.1:9333/ -d '{"shot":"<png路径>"}'
-curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+python <repo>/skills/cdp-observe/scripts/cdp.py detect
+# 输出 mode: inspect / traditional → 已开调试
+# 输出 Chrome 未开远程调试 → 提示用户开启
 ```
 
-浏览器/Chrome 重启后代理连接失效，需重启代理（重新弹一次授权）。
+## 常驻代理（⚠️ 硬性要求：一律走代理）
 
-## 单次命令（仅兜底，代理不可用/无法重起时）
-
-每条命令各弹一次授权，优先 `multi` 一次连多条：
+chrome://inspect 模式下每次**新 CDP 连接**弹一次授权。代理启动时连一次，之后所有命令复用。
 
 ```bash
-# 列出页面 tab
+# 0. 确保代理在跑
+curl -s -m 2 http://127.0.0.1:9333/ -d '{"pages":1}' >/dev/null 2>&1 \
+  || (python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 &)
+sleep 1
+
+# 1. 发命令
+curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
+curl -s http://127.0.0.1:9333/ -d '{"shot":"<png路径>"}'
+curl -s http://127.0.0.1:9333/ -d '{"navigate":"<url>"}'
+curl -s http://127.0.0.1:9333/ -d '{"ensure":"<url子串>"}'   # 有则复用，无则创建
+curl -s http://127.0.0.1:9333/ -d '{"open":"<url>"}'         # 显式新建 tab
+curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+curl -s http://127.0.0.1:9333/ -d '{"detect":1}'             # 只读探测
+```
+
+Chrome 重启后代理失效，需重启（重新弹一次授权）。
+
+## 事件监听
+
+```bash
+curl -s http://127.0.0.1:9333/ -d '{"enable":"Network"}'     # 启用事件域
+curl -s http://127.0.0.1:9333/ -d '{"events":"Network"}'     # 拉事件（支持 domain 过滤）
+curl -s http://127.0.0.1:9333/ -d '{"clear_events":1}'        # 清空缓冲
+```
+
+## 单次 CLI（仅兜底，每条命令各弹一次授权）
+
+```bash
+python <repo>/skills/cdp-observe/scripts/cdp.py detect
+python <repo>/skills/cdp-observe/scripts/cdp.py open '<url>'
 python <repo>/skills/cdp-observe/scripts/cdp.py list
-
-# 执行一段 JS 并返回结果
 python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
-
-# 一次连接执行多条 JS（只弹一次授权）
 python <repo>/skills/cdp-observe/scripts/cdp.py multi '<js1>' '<js2>' ...
-
-# 截图
-python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
+python <repo>/skills/cdp-observe/scripts/cdp.py shot <file.png>
+python <repo>/skills/cdp-observe/scripts/cdp.py navigate '<url>'
 ```
 
 ## 目标页选择
 
-代理启动时选定：有 `CDP_TARGET` 用其 URL 子串（调试任意应用），否则选含 `8188` 的 tab（ComfyUI 常用），再无则第一个 tab：
+代理/CLI 自动 `ensure_tab` — 优先匹配 `CDP_TARGET` 环境变量，然后找第一个非 chrome:// 页面，**全部没有时自动创建 `about:blank`**。
 
 ```bash
-# 调试其他应用：起代理前指定目标（常驻代理同样适用）
-CDP_TARGET=127.0.0.1:5000 python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 &
-# 或先列出所有 tab 确认目标
-curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+# 指定目标 URL 子串
+CDP_TARGET=example.com python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 &
+CDP_TARGET=example.com python <repo>/skills/cdp-observe/scripts/cdp.py list
+
+# 指定创建 URL（默认 about:blank）
+CDP_CREATE_URL=https://example.com python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 &
 ```
 
-## Chrome 配置操作
+## Chrome 配置
 
 ```bash
-# 检查调试端口
-curl -s http://127.0.0.1:9222/json/version        # 传统模式（inspect 模式会 404 属正常）
-cat "$LOCALAPPDATA/Google/Chrome/User Data/DevToolsActivePort"   # inspect 模式读此文件（端口 + ws 路径）
-
-# 重建「Chrome（Claude可接管）」桌面快捷方式（带 --remote-debugging-port + 专用 profile，无授权弹窗）
-python -c "import win32com.client as w; s=w.Dispatch('WScript.Shell'); sc=s.CreateShortCut(r'D:\用户文件\桌面\Chrome（Claude可接管）.lnk'); sc.TargetPath=r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'; sc.Arguments='--remote-debugging-port=9222 --user-data-dir=\"H:\\temp\\chrome-debug-profile\"'; sc.Save(); print('ok')"
+# 传统模式（--remote-debugging-port）
+curl -s http://127.0.0.1:9222/json/version
+# inspect 模式
+cat "$LOCALAPPDATA/Google/Chrome/User Data/DevToolsActivePort"
 ```
 
 详见 [setup.md](setup.md)（Chrome 136+ 安全变更、两种开启方式）。

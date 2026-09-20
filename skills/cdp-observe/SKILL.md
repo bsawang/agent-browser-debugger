@@ -2,17 +2,16 @@
 name: cdp-observe
 description: >
   需要实时查看/调试浏览器前端状态时使用——DOM/布局/渲染/预览表现、执行结果在界面的呈现、
-  任何「前端实际长什么样/为什么这样显示」的疑问。适用于任意浏览器应用
-  （ComfyUI、Flask/Vue 页面、自建 web 工具等，不限定具体软件）。
-  通过 Chrome DevTools 协议（CDP）接管用户已运行的 Chrome，只读观察，
-  **不自行启动/重启浏览器**。
+  任何「前端实际长什么样/为什么这样显示」的疑问。
+  通过 Chrome DevTools 协议（CDP）接管用户已运行的 Chrome，提供实时调试能力。
+  **不自行启动/重启浏览器**，但会在目标 tab 不存在时自动创建。
 ---
 
 # CDP 接管观察（Chrome）
 
 ## 什么时候用
 - 看浏览器里真实的 DOM / 布局 / 渲染 / 交互状态
-- 任意浏览器应用的前端排查：ComfyUI 节点 widget、Vue/React 组件、普通页面元素、预览渲染、执行结果在界面的表现
+- 任何前端应用的调试：组件渲染、元素状态、预览渲染、执行结果在界面的表现
 - 任何「前端实际长什么样 / 为什么这样显示」的疑问
 
 ## 前置（用户环境）
@@ -21,63 +20,94 @@ description: >
    （默认 profile 保留登录；每次**新连接**弹授权，用常驻代理避免）
 2. 或桌面「Chrome（Claude可接管）」快捷方式（传统 `--remote-debugging-port=9222 --user-data-dir`，无授权但独立 profile）
 
-**检查可调试**（判据＝其中任一即可：`/json/version` 返 **200** 或 `DevToolsActivePort` 文件存在）：
+**检查可调试**（一行命令，不弹授权）：
 ```bash
-code=$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:9222/json/version)
-port_file="$LOCALAPPDATA/Google/Chrome/User Data/DevToolsActivePort"
-if [ "$code" = "200" ]; then echo "传统模式可调试"; \
-elif [ -f "$port_file" ]; then echo "inspect模式可调试: ws://127.0.0.1:$(head -1 "$port_file")$(sed -n 2p "$port_file")"; \
-else echo "Chrome未开调试"; fi
+python <repo>/skills/cdp-observe/scripts/cdp.py detect
 ```
-- `/json/version` 返 **200** → 传统模式可用
-- **404/空** → **仍是 inspect 模式、可调试**——此模式不走 HTTP json 发现，改由 `DevToolsActivePort` 文件给 ws 地址（`ws://127.0.0.1:<port><path>`）
-- **两者都无** → Chrome 未开调试，**不要自行启动/重启浏览器**，提示用户开启远程调试后继续
 
-> ⚠️ 坑：inspect 模式下 `9222/json/version` 是 **404/空**，**不等于没开调试**——所以**不能只看 `/json/version` 有无响应**判可调试，必须两个判据都查。
+> ⚠️ 坑：inspect 模式下 HTTP `/json/version` 是 **404**（此模式不走 HTTP 发现，改由 `DevToolsActivePort` 文件给 ws 地址）；`detect` 已同时覆盖两种模式。
 
 ## 工作流（⚠️ 硬性要求：一律走常驻代理长连接）
-> 一次调试少则 4~5 条命令；单次命令每条都是新连接、各弹一次授权。
-> **即使再小的调试也只用常驻代理**，不直接调 `cdp.py`（代理不可用时才兜底，见下）。
+> chrome://inspect 模式下每次**新 CDP 连接**弹一次授权。
+> 常驻代理启动时连一次（弹一次 Allow），之后所有命令复用同一连接——**再小的调试也只用代理**。
 
-**0. 先查代理 9333，没跑再起**（顺序：① 前置确认 Chrome 可调试 → ② 查 9333 在不在 → ③ 不在才起）：
+**0. 确保代理在跑**（顺序：先 `detect` 确认 Chrome 可调试 → 再查/起代理）：
 ```bash
+# 快速探测（不弹授权）
+python <repo>/skills/cdp-observe/scripts/cdp.py detect
+
+# 代理探活 + 自动起（没跑就起，起时弹一次授权）
 curl -s -m 2 http://127.0.0.1:9333/ -d '{"pages":1}' >/dev/null 2>&1 \
   || (python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 > <repo>/_cdp_proxy.log 2>&1 &)
 sleep 1
 ```
-> 代理依赖 Chrome 已可调试——前置未确认前**不直接起代理**（起了也连不上）。
 > Chrome 重启后代理连接失效 → 重跑上面命令重启代理（会再弹一次授权）。
 
-**1. 所有命令走代理**（连接保持，不弹窗）：
+**1. 所有命令走代理**：
 ```bash
+# 执行 JS
 curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
+
+# 截图
 curl -s http://127.0.0.1:9333/ -d '{"shot":"<png路径>"}'
+
+# 导航
+curl -s http://127.0.0.1:9333/ -d '{"navigate":"<url>"}'
+
+# 列 page tab
 curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+
+# 切换目标页（代理启动后可热切换，不用重连）
+curl -s http://127.0.0.1:9333/ -d '{"target":"<url子串>"}'
+
+# 确保目标 tab 存在 — 有则复用，无则创建新 tab
+curl -s http://127.0.0.1:9333/ -d '{"ensure":"<url子串>"}'
+
+# 显式新建 tab 打开 URL
+curl -s http://127.0.0.1:9333/ -d '{"open":"<url>"}'
 ```
 
-> **目标页**：代理启动时选定——有 `CDP_TARGET` 用其 URL 子串（调试任意应用），
-> 否则选含 `8188` 的 tab（ComfyUI 常用），再无则第一个 tab：
-> ```bash
-> CDP_TARGET=127.0.0.1:5000 python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 &
-> ```
+> **目标页选择**：代理启动时自动 `ensure_tab` — 优先匹配 `CDP_TARGET` 环境变量指定的 URL 子串，然后找第一个非 chrome:// 页面；**所有 tab 都没有时自动创建 `about:blank`**，不再出现「没 tab 就退出」。启动后可随时 `{"ensure":"..."}` 或 `{"open":"..."}` 切换。
 
 **单次 `cdp.py` 仅兜底**（代理不可用/无法重起时；每条命令各弹一次授权，优先 `multi` 一次连多条）：
 ```bash
-python <repo>/skills/cdp-observe/scripts/cdp.py list
+python <repo>/skills/cdp-observe/scripts/cdp.py detect          # 只读探测（不弹授权）
+python <repo>/skills/cdp-observe/scripts/cdp.py open '<url>'   # 新建 tab
+python <repo>/skills/cdp-observe/scripts/cdp.py list            # 列 tab
 python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
-python <repo>/skills/cdp-observe/scripts/cdp.py multi '<js1>' '<js2>' ...   # 一次连接多条
+python <repo>/skills/cdp-observe/scripts/cdp.py multi '<js1>' '<js2>' ...
 python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
+python <repo>/skills/cdp-observe/scripts/cdp.py navigate '<url>'
 ```
 
-> python 需 aiohttp：系统 python 缺则用运行副本
-> `H:\ComfyUI_Windows_portable\python_standalone\python.exe <脚本> ...`
+> python 需 aiohttp（`pip install aiohttp`）
+
+## 事件观察（内置）
+代理自动监听所有 CDP 事件并缓冲最近 200 条，随时拉取：
+
+```bash
+# 启用 CDP 事件域（如 Network、DOM、Page）
+curl -s http://127.0.0.1:9333/ -d '{"enable":"Network"}'
+
+# 触发页面操作（用户在浏览器操作，或用 {"navigate":"..."} 触发）
+
+# 拉取事件（可选 domain 过滤）
+curl -s http://127.0.0.1:9333/ -d '{"events":"Network"}'     # 只要 Network.*
+curl -s http://127.0.0.1:9333/ -d '{"events":1}'             # 全部事件
+curl -s http://127.0.0.1:9333/ -d '{"clear_events":1}'        # 清空
+```
+
+**典型用法**：
+- **抓网络请求**：`{"enable":"Network"}` → 操作页面 → `{"events":"Network"}` 看 `requestWillBeSent` / `responseReceived`
+- **观察 DOM 变更**：`{"enable":"DOM"}` → 页面元素变化时 `documentUpdated` 事件
+- **抓页面加载事件**：`{"enable":"Page"}` → `loadEventFired` / `domContentEventFired`
 
 ## 常用观察 JS（通用，任意页面可用）
 - 页面信息（url/title）：
   ```js
   JSON.stringify({url: location.href, title: document.title})
   ```
-- 读元素文本（`<选择器>` 替换为目标）：
+- 读元素文本：
   ```js
   (()=>{const e=document.querySelector('<选择器>'); return e?.innerText?.slice(0,500) ?? null;})()
   ```
@@ -87,32 +117,19 @@ python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
    const s=getComputedStyle(e), r=e.getBoundingClientRect();
    return JSON.stringify({w:r.width,h:r.height,x:r.x,y:r.y,display:s.display});})()
   ```
-- 列页面 video/img 元素：
-  ```js
-  (()=>JSON.stringify([...document.querySelectorAll('video,img')].map(x=>[x.tagName, x.src||x.currentSrc])))()
-  ```
-
-> 特定软件/站点的观察 JS 与踩坑按专题归档，见「命令归档规约」：ComfyUI → `docs/comfy/commands.md`，其他专题按需新建文档。
 
 ## 约定 ⚠️
-- **调试一律走常驻代理长连接**：禁止直接调 `cdp.py` 单次命令（每条各弹一次授权）；仅代理不可用且无法重起时才兜底，且优先 `multi` 一次连多条
-- **只观察 + 临时调试**：不保存页面/应用状态、不改浏览器设置/配置/书签/扩展
-- **不自行启动/重启浏览器**：用户浏览器常态运行；确需重启时提示用户操作，不代劳
-- 临时 JS 注入只在该页面进程内生效，刷新即还原；结束不留痕
-- 需要改动用户浏览器持久内容（保存应用状态、改设置等）时，**先征得用户同意**
+- **调试一律走常驻代理长连接**：禁止直接调 `cdp.py` 单次命令（每条各弹一次授权）；仅代理不可用且无法重起时才兜底
+- **只观察 + 临时调试**：工具具备完整的 CDP 写能力，但调试场景下应优先用只读能力。临时 JS 注入在页面刷新后还原，不主动做持久化改动
+- **不自行启动浏览器**：Chrome 需已在运行（由用户启动）。代理会自动创建 tab，但不会启动整个浏览器进程
+- 需要改动用户浏览器持久内容（保存状态、改设置等）时，**先征得用户同意**
 
-## 命令归档规约 ⚠️
-调试中遇到的**新可复用命令 / 新坑，定案后归档到 agent-browser-debugger 项目对应文档**（追加，不覆盖）：
-
-| 命令类型 | 归档位置 |
-|---|---|
-| 调试本身（Chrome/CDP 通用） | `E:\work\ai\agent-browser-debugger\docs\commands.md` |
-| **ComfyUI 专题**（观察 JS、执行、重启、节点/预览坑） | `E:\work\ai\agent-browser-debugger\docs\comfy\commands.md` |
-| 其他应用专题（站点/软件专属命令） | `E:\work\ai\agent-browser-debugger\docs\<主题>\commands.md`（按需新建） |
-| Chrome 远程调试原理与配置 | `E:\work\ai\agent-browser-debugger\docs\setup.md` |
-
-SKILL.md 只放触发/工作流/约定，具体命令一律归档到上述文档；新条目一句话（命令 + 用途）即可。
+## 文档索引
+- Chrome 远程调试配置：[`docs/setup.md`](../docs/setup.md)
+- 代理命令速查：[`docs/commands.md`](../docs/commands.md)
+- 项目 README（定位 + 可嵌入 API）：[`README.md`](../README.md)
 
 ## 脚本
-`scripts/cdp.py` — 单次命令（单连接）：`list` / `eval` / `multi` / `shot`
-`scripts/cdp_proxy.py` — 常驻代理（推荐）：后台保持单连接，本地端口收发命令，避免重复授权弹窗
+`scripts/cdp_core.py` — 共享核心（CDP 类 + detect + select + **ensure_tab**）← 可嵌入
+`scripts/cdp.py` — CLI：detect / open / list / eval / multi / shot / navigate
+`scripts/cdp_proxy.py` — HTTP 代理：常驻连接 + ensure_tab 自动创建 + 事件缓冲

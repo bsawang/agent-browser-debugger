@@ -2,139 +2,169 @@
 # -*- coding: utf-8 -*-
 """常驻 CDP 代理：保持单个 CDP 连接，通过本地 HTTP 端口接收命令。
 
-避免 chrome://inspect 模式「每次连接弹授权」的问题——启动时连一次（弹一次 Allow），
-之后所有观察命令走本代理，不再重新连接、不再弹窗。
+设计原则：调试目标最大可能提供实时能力，通用性优先。
 
-启动（后台）：python cdp_proxy.py [端口]   # 默认 9333，仅监听 127.0.0.1
-调用：
-  curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
-  curl -s http://127.0.0.1:9333/ -d '{"shot":"<png路径>"}'
-  curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+启动（后台）：python cdp_proxy.py [端口] [目标URL子串]
+  默认 9333；目标 URL 子串可省（代理会自动找第一个非 chrome:// 页面，没有则创建 about:blank）
+  目标创建 URL 可通过 CDP_CREATE_URL 环境变量覆盖（默认 about:blank）
+
+所有命令（POST JSON 到 http://127.0.0.1:<port>/）：
+  {"eval":"<js>"}              执行 JS
+  {"shot":"<png路径>"}          截图
+  {"pages":1}                  列 page tab
+  {"navigate":"<url>"}         导航
+  {"target":"<url子串>"}       切换目标页（热切换，不用重连）
+  {"open":"<url>"}             新建 tab 打开 URL 并 attach
+  {"ensure":"<url子串>"}       有匹配 tab 则切换，无则创建并 attach
+  {"detect":1}                 只读探测 Chrome 调试状态（不弹授权）
+  {"enable":"<Domain>"}        启用 CDP 事件域（如 Network、DOM、Page）
+  {"events":"<Domain>"}        读取事件缓冲（支持 domain 过滤）
+  {"clear_events":1}           清空事件缓冲
 """
 import asyncio
-import base64
-import json
 import os
 import sys
+from collections import deque
 
 import aiohttp
 from aiohttp import web
 
+from cdp_core import CDP, detect_ws_url, select_target, chrome_running
+
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 9333
+TARGET_SUBSTR = sys.argv[2] if len(sys.argv) > 2 else None
+CREATE_URL = os.environ.get("CDP_CREATE_URL", "about:blank")
 
 
-def default_user_data_dir():
-    local = os.environ.get("LOCALAPPDATA", "")
-    return os.path.join(local, "Google", "Chrome", "User Data")
+# —— 友好提示模板 ——
+
+HELP_INSPECT = """
+  Chrome 运行中但未开启远程调试，两步搞定：
+    1. 地址栏输入 chrome://inspect 回车
+    2. 勾选右下角 "Allow remote debugging"
+  （勾选后代理会自动连上；首次连接 Chrome 会弹授权框，点允许即可）"""
+
+HELP_NO_CHROME = """
+  没检测到 Chrome 进程，请先启动 Chrome。
+  启动后如果还没开调试：chrome://inspect → 勾选 Allow remote debugging"""
 
 
-def select_target(pages):
-    """目标页选择：CDP_TARGET（URL 子串，调试任意应用）→ 8188（ComfyUI 常用）→ 第一个 tab。"""
-    env = os.environ.get("CDP_TARGET", "").strip()
-    needles = [env] if env else ["8188"]
-    for n in needles:
-        for p in pages:
-            if n in p.get("url", ""):
-                return p
-    return pages[0]
+# —— 事件缓冲（最近 200 条 CDP 事件，轮询式读取）——
+_event_buffer: deque = deque(maxlen=200)
 
 
-async def get_browser_ws_url():
-    ap = os.path.join(default_user_data_dir(), "DevToolsActivePort")
-    if os.path.isfile(ap):
-        with open(ap, encoding="utf-8") as f:
-            lines = f.read().splitlines()
-        if len(lines) >= 2:
-            return f"ws://127.0.0.1:{lines[0].strip()}{lines[1].strip()}", "inspect"
-    async with aiohttp.ClientSession() as s:
-        async with s.get("http://127.0.0.1:9222/json/version", timeout=aiohttp.ClientTimeout(total=3)) as r:
-            return (await r.json())["webSocketDebuggerUrl"], "traditional"
-
-
-class CDP:
-    def __init__(self, url):
-        self.url = url
-        self.ws = None
-        self.nid = 0
-        self.session = None
-
-    async def connect(self):
-        self.ws = await aiohttp.ClientSession().ws_connect(self.url)
-
-    async def call(self, method, params=None, session_id=None):
-        self.nid += 1
-        msg = {"id": self.nid, "method": method, "params": params or {}}
-        if session_id:
-            msg["sessionId"] = session_id
-        await self.ws.send_json(msg)
-        while True:
-            r = await self.ws.receive_json()
-            if r.get("id") == self.nid:
-                return r
-
-    async def pages(self):
-        r = await self.call("Target.getTargets")
-        return [t for t in r.get("result", {}).get("targetInfos", []) if t.get("type") == "page"]
-
-    async def attach_page(self, target_id):
-        r = await self.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
-        self.session = r.get("result", {}).get("sessionId")
-        await self.call("Runtime.enable", session_id=self.session)
-
-    async def eval(self, expr, session_id=None):
-        r = await self.call("Runtime.evaluate",
-                            {"expression": expr, "returnByValue": True, "awaitPromise": True},
-                            session_id=session_id or self.session)
-        rr = r.get("result", {})
-        if "exceptionDetails" in rr:
-            return {"_error": rr["exceptionDetails"].get("text", ""),
-                    "_desc": rr.get("result", {}).get("description", "")[:500]}
-        res = rr.get("result", {})
-        if "value" in res:
-            return res["value"]
-        if "description" in res:
-            return {"_desc": res["description"][:500]}
-        return None
-
-    async def shot(self, path, session_id=None):
-        await self.call("Page.enable", session_id=session_id or self.session)
-        r = await self.call("Page.captureScreenshot", {"format": "png"},
-                            session_id=session_id or self.session)
-        with open(path, "wb") as f:
-            f.write(base64.b64decode(r["result"]["data"]))
-        return path
-
-    async def close(self):
-        if self.ws:
-            await self.ws.close()
+def _on_any_event(method: str, params: dict):
+    _event_buffer.append({"method": method, "params": params})
 
 
 async def main():
-    url, mode = await get_browser_ws_url()
-    c = CDP(url)
-    await c.connect()  # 唯一一次授权弹窗
-    await c.call("Runtime.enable")
-    pages = await c.pages()
-    if not pages:
-        print("no page tab")
+    ws_url, mode, _ = await detect_ws_url()
+
+    if not ws_url:
+        if chrome_running():
+            print(f"[proxy] Chrome 运行中但未开远程调试\n{HELP_INSPECT}")
+        else:
+            print(f"[proxy] 未检测到 Chrome\n{HELP_NO_CHROME}")
         return
-    target = select_target(pages)
+
+    print(f"[proxy] 检测到 Chrome ({mode}) → {ws_url}")
+
+    c = CDP()
+    await c.connect(ws_url)
+    await c.start()
+    c.on_event(_on_any_event)
+
+    # —— ensure_tab：目标不存在时自动创建 ——
+    target = await c.ensure_tab(TARGET_SUBSTR, CREATE_URL)
     await c.attach_page(target["targetId"])
-    print(f"[proxy] connected ({mode}) to {target.get('url', '')} | listen :{PORT}")
+
+    url_label = target.get("url", "")
+    was_created = url_label == CREATE_URL
+    if was_created:
+        print(f"[proxy] 未找到匹配 tab → 已创建新 tab: {url_label}")
+    else:
+        print(f"[proxy] 目标 tab: {url_label}")
+    print(f"[proxy] 就绪：curl -s http://127.0.0.1:{PORT}/ -d '{{\"eval\":\"<js>\"}}'")
+
+    # —— HTTP handler ——
 
     async def handle(req):
         try:
             data = await req.json()
         except Exception:
             return web.json_response({"err": "bad json"})
+
         try:
-            if "eval" in data:
-                return web.json_response({"result": await c.eval(data["eval"])})
-            if "shot" in data:
-                return web.json_response({"saved": await c.shot(data["shot"])})
+            # detect：只读探测，不走 CDP 连接
+            if "detect" in data:
+                ws_url2, mode2, tabs2 = await detect_ws_url()
+                return web.json_response({
+                    "found": bool(ws_url2),
+                    "mode": mode2,
+                    "ws": ws_url2,
+                    "tabs": tabs2,
+                })
+
+            # pages
             if "pages" in data:
                 return web.json_response({"pages": await c.pages()})
+
+            # eval
+            if "eval" in data:
+                return web.json_response({"result": await c.eval(data["eval"])})
+
+            # shot
+            if "shot" in data:
+                return web.json_response({"saved": await c.shot(data["shot"])})
+
+            # navigate
+            if "navigate" in data:
+                await c.navigate(data["navigate"])
+                return web.json_response({"navigated": data["navigate"]})
+
+            # target 切换
+            if "target" in data:
+                pages = await c.pages()
+                tgt = select_target(pages, data["target"] or None)
+                if not tgt:
+                    return web.json_response({"err": "no matching target"})
+                await c.attach_page(tgt["targetId"])
+                return web.json_response({"target": tgt})
+
+            # open：新建 tab 打开 URL 并 attach
+            if "open" in data:
+                target_id = await c.create_target(data["open"])
+                await asyncio.sleep(0.3)
+                await c.attach_page(target_id)
+                return web.json_response({"opened": data["open"], "targetId": target_id})
+
+            # ensure：有匹配 tab 则 attach，无则创建并 attach
+            if "ensure" in data:
+                tgt = await c.ensure_tab(data["ensure"], CREATE_URL)
+                await c.attach_page(tgt["targetId"])
+                return web.json_response({"target": tgt, "wasCreated": tgt.get("url") == CREATE_URL})
+
+            # 启用 CDP 事件域（幂等去重）
+            if "enable" in data:
+                domain = data["enable"]
+                actually_enabled = await c.enable_domain(domain)
+                return web.json_response({"enabled": domain, "wasNew": actually_enabled})
+
+            # 读取事件缓冲
+            if "events" in data:
+                domain_filter = data["events"] if isinstance(data["events"], str) else None
+                items = list(_event_buffer)
+                if domain_filter:
+                    items = [e for e in items if e["method"].startswith(domain_filter + ".")]
+                return web.json_response({"events": items})
+
+            # 清空事件缓冲
+            if "clear_events" in data:
+                _event_buffer.clear()
+                return web.json_response({"cleared": True})
+
             return web.json_response({"err": "unknown cmd"})
+
         except Exception as e:
             return web.json_response({"err": str(e)})
 
@@ -145,7 +175,6 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", PORT)
     await site.start()
-    print(f"[proxy] ready: curl -s http://127.0.0.1:{PORT}/ -d '{{\"eval\":\"<js>\"}}'")
     await asyncio.Event().wait()
 
 
