@@ -9,17 +9,29 @@
   目标创建 URL 可通过 CDP_CREATE_URL 环境变量覆盖（默认 about:blank）
 
 所有命令（POST JSON 到 http://127.0.0.1:<port>/）：
+  —— 观察类 ——
   {"eval":"<js>"}              执行 JS
   {"shot":"<png路径>"}          截图
   {"pages":1}                  列 page tab
-  {"navigate":"<url>"}         导航
-  {"target":"<url子串>"}       切换目标页（热切换，不用重连）
-  {"open":"<url>"}             新建 tab 打开 URL 并 attach
-  {"ensure":"<url子串>"}       有匹配 tab 则切换，无则创建并 attach
   {"detect":1}                 只读探测 Chrome 调试状态（不弹授权）
   {"enable":"<Domain>"}        启用 CDP 事件域（如 Network、DOM、Page）
   {"events":"<Domain>"}        读取事件缓冲（支持 domain 过滤）
   {"clear_events":1}           清空事件缓冲
+  —— 页面管理 ——
+  {"navigate":"<url>"}         导航
+  {"target":"<url子串>"}       切换目标页（热切换，不用重连）
+  {"open":"<url>"}             新建 tab 打开 URL 并 attach
+  {"ensure":"<url子串>"}       有匹配 tab 则切换，无则创建并 attach
+  —— 操作类 ——
+  {"click":"<selector>"}       点击 CSS selector 元素
+  {"click":{"selector":"...","button":"right"}}  指定按钮点击
+  {"click":{"x":100,"y":200}}   坐标点击
+  {"hover":"<selector>"}       悬停到元素
+  {"type":{"selector":"...","text":"hello"}}   聚焦元素并输入
+  {"type":"hello world"}       在当前焦点位置输入（纯文本模式）
+  {"press_key":"Enter"}        按键（Enter/Tab/Escape/Backspace/箭头字母数字）
+  {"handle_dialog":true}      确认 JS 对话框（false = 取消）
+  {"handle_dialog":{"accept":true,"promptText":"..."}}  处理 prompt 对话框
 """
 import asyncio
 import os
@@ -162,6 +174,78 @@ async def main():
             if "clear_events" in data:
                 _event_buffer.clear()
                 return web.json_response({"cleared": True})
+
+            # —— 操作类 ——
+
+            # click：支持三种形式
+            #   "click": "<selector>"
+            #   "click": {"selector": "...", "button": "left"}
+            #   "click": {"x": 100, "y": 200}
+            if "click" in data:
+                spec = data["click"]
+                if isinstance(spec, str):
+                    await c.click(spec)
+                elif isinstance(spec, dict):
+                    if "selector" in spec:
+                        await c.click(spec["selector"], button=spec.get("button", "left"))
+                    elif "x" in spec and "y" in spec:
+                        await c.click((float(spec["x"]), float(spec["y"])), button=spec.get("button", "left"))
+                    else:
+                        return web.json_response({"err": "click needs selector or x/y"})
+                else:
+                    return web.json_response({"err": "click bad format"})
+                return web.json_response({"clicked": True})
+
+            # hover
+            if "hover" in data:
+                spec = data["hover"]
+                if isinstance(spec, str):
+                    await c.hover(spec)
+                elif isinstance(spec, dict) and "selector" in spec:
+                    await c.hover(spec["selector"])
+                elif isinstance(spec, dict) and "x" in spec and "y" in spec:
+                    await c.hover((float(spec["x"]), float(spec["y"])))
+                else:
+                    return web.json_response({"err": "hover needs selector or x/y"})
+                return web.json_response({"hovered": True})
+
+            # type：支持两种形式
+            #   "type": {"selector": "...", "text": "hello"}
+            #   "type": "hello world"（在当前焦点输入）
+            if "type" in data:
+                spec = data["type"]
+                if isinstance(spec, str):
+                    await c.type_text(spec)
+                elif isinstance(spec, dict) and "text" in spec:
+                    await c.type_text(spec["text"], selector=spec.get("selector"))
+                else:
+                    return web.json_response({"err": "type needs text"})
+                return web.json_response({"typed": True})
+
+            # press_key
+            if "press_key" in data:
+                spec = data["press_key"]
+                if isinstance(spec, str):
+                    await c.press_key(spec)
+                elif isinstance(spec, dict) and "key" in spec:
+                    await c.press_key(spec["key"], modifiers=spec.get("modifiers", 0))
+                else:
+                    return web.json_response({"err": "press_key needs key string"})
+                return web.json_response({"pressed": True})
+
+            # handle_dialog：true/false/{"accept":...,"promptText":...}
+            if "handle_dialog" in data:
+                spec = data["handle_dialog"]
+                if isinstance(spec, bool):
+                    ok = await c.handle_dialog(accept=spec)
+                elif isinstance(spec, dict):
+                    ok = await c.handle_dialog(
+                        accept=spec.get("accept", True),
+                        prompt_text=spec.get("promptText"),
+                    )
+                else:
+                    return web.json_response({"err": "handle_dialog bad format"})
+                return web.json_response({"dialogHandled": ok})
 
             return web.json_response({"err": "unknown cmd"})
 

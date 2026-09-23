@@ -34,6 +34,14 @@ import aiohttp
 
 DEFAULT_PORT = 9222
 
+# Windows virtual key codes (subset for press_key)
+_KEY_CODE_MAP = {
+    "Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, "Delete": 46,
+    "ArrowUp": 38, "ArrowDown": 40, "ArrowLeft": 37, "ArrowRight": 39,
+    "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34, "Insert": 45,
+    " ": 32,
+}
+
 
 def default_user_data_dir():
     local = os.environ.get("LOCALAPPDATA", "")
@@ -390,6 +398,145 @@ class CDP:
         return await self.send(
             "Page.navigate", {"url": url}, session_id=session_id or self._session
         )
+
+    # —— 浏览器操作（CDP Input 域 + DOM 辅助）——
+
+    async def _resolve_selector_center(self, selector: str, session_id: str | None = None) -> tuple[float, float]:
+        """selector → getBoundingClientRect → 中心点坐标。找不到抛 ValueError。"""
+        sid = session_id or self._session
+        js = f"""
+        (() => {{
+            const el = document.querySelector({json.dumps(selector)});
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return {{x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height}};
+        }})()
+        """
+        r = await self.send(
+            "Runtime.evaluate",
+            {"expression": js, "returnByValue": True, "awaitPromise": False},
+            session_id=sid,
+        )
+        rr = r.get("result", {}).get("result", {})
+        center = rr.get("value") if "value" in rr else None
+        if not center:
+            raise ValueError(f"selector not found: {selector}")
+        return center["x"], center["y"]
+
+    async def _dispatch_mouse(self, x: float, y: float, button: str = "left",
+                              types: list[str] | None = None,
+                              session_id: str | None = None):
+        """派发鼠标事件序列（mouseMoved → mousePressed → mouseReleased 默认 click）。"""
+        sid = session_id or self._session
+        if types is None:
+            types = ["mouseMoved", "mousePressed", "mouseReleased"]
+        button_map = {"left": "left", "right": "right", "middle": "middle", "back": "back", "forward": "forward"}
+        cd_button = button_map.get(button, "left")
+        for t in types:
+            params = {
+                "type": t,
+                "x": x,
+                "y": y,
+                "button": cd_button,
+                "clickCount": 1,
+            }
+            if t == "mousePressed":
+                params["buttons"] = 1 if cd_button == "left" else 2
+            elif t == "mouseReleased":
+                params["buttons"] = 0
+            await self.send("Input.dispatchMouseEvent", params, session_id=sid)
+            await asyncio.sleep(0.02)
+
+    async def click(self, selector_or_xy, button: str = "left",
+                    session_id: str | None = None) -> bool:
+        """点击元素。selector_or_xy 可以是 CSS selector 字符串，或 (x, y) tuple。"""
+        sid = session_id or self._session
+        if isinstance(selector_or_xy, str):
+            x, y = await self._resolve_selector_center(selector_or_xy, sid)
+        elif isinstance(selector_or_xy, (tuple, list)) and len(selector_or_xy) == 2:
+            x, y = float(selector_or_xy[0]), float(selector_or_xy[1])
+        else:
+            raise TypeError("click expects selector str or (x,y) tuple")
+        await self._dispatch_mouse(x, y, button, session_id=sid)
+        return True
+
+    async def hover(self, selector_or_xy, session_id: str | None = None) -> bool:
+        """悬停到元素中心（只发 mouseMoved）。"""
+        sid = session_id or self._session
+        if isinstance(selector_or_xy, str):
+            x, y = await self._resolve_selector_center(selector_or_xy, sid)
+        elif isinstance(selector_or_xy, (tuple, list)) and len(selector_or_xy) == 2:
+            x, y = float(selector_or_xy[0]), float(selector_or_xy[1])
+        else:
+            raise TypeError("hover expects selector str or (x,y) tuple")
+        await self.send(
+            "Input.dispatchMouseEvent",
+            {"type": "mouseMoved", "x": x, "y": y},
+            session_id=sid,
+        )
+        return True
+
+    async def press_key(self, key: str, modifiers: int = 0,
+                        session_id: str | None = None) -> bool:
+        """按键（CDP Input.dispatchKeyEvent）。key 是 KeyboardEvent.key 值，如 'Enter'、'a'、'Backspace'。
+
+        modifiers: 0=none, 1=Alt, 2=Ctrl, 4=Meta, 8=Shift（可组合）
+        """
+        sid = session_id or self._session
+        code_map = {
+            "Enter": "Enter", "Tab": "Tab", "Escape": "Escape",
+            "Backspace": "Backspace", "Delete": "Delete",
+            "ArrowUp": "ArrowUp", "ArrowDown": "ArrowDown", "ArrowLeft": "ArrowLeft", "ArrowRight": "ArrowRight",
+            "Home": "Home", "End": "End", "PageUp": "PageUp", "PageDown": "PageDown",
+            "Insert": "Insert", "F1": "F1", "F2": "F2", "F3": "F3", "F4": "F4",
+            "F5": "F5", "F6": "F6", "F7": "F7", "F8": "F8", "F9": "F9",
+            "F10": "F10", "F11": "F11", "F12": "F12",
+        }
+        code = code_map.get(key, f"Key{key.upper()}" if len(key) == 1 else key)
+        key_code = _KEY_CODE_MAP.get(key, 0)
+        await self.send(
+            "Input.dispatchKeyEvent",
+            {"type": "keyDown", "key": key, "code": code, "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code, "modifiers": modifiers},
+            session_id=sid,
+        )
+        await self.send(
+            "Input.dispatchKeyEvent",
+            {"type": "keyUp", "key": key, "code": code, "windowsVirtualKeyCode": key_code, "nativeVirtualKeyCode": key_code, "modifiers": modifiers},
+            session_id=sid,
+        )
+        return True
+
+    async def type_text(self, text: str, selector: str | None = None,
+                        session_id: str | None = None) -> bool:
+        """输入文本。可选先聚焦 selector 元素（click 一下），然后逐字符派发 key events。"""
+        sid = session_id or self._session
+        if selector:
+            await self.click(selector, session_id=sid)
+            await asyncio.sleep(0.05)
+        for ch in text:
+            if ch == "\n":
+                await self.press_key("Enter", session_id=sid)
+            elif ch == "\t":
+                await self.press_key("Tab", session_id=sid)
+            else:
+                code = f"Key{ch.upper()}" if ch.isalpha() else f"Digit{ch}" if ch.isdigit() else ch
+                await self.send(
+                    "Input.dispatchKeyEvent",
+                    {"type": "char", "text": ch, "key": ch, "code": code},
+                    session_id=sid,
+                )
+            await asyncio.sleep(0.01)
+        return True
+
+    async def handle_dialog(self, accept: bool = True, prompt_text: str | None = None,
+                            session_id: str | None = None) -> bool:
+        """处理 JS 对话框（alert/confirm/prompt/beforeunload）。accept=False = 点取消。"""
+        sid = session_id or self._session
+        params = {"accept": accept}
+        if prompt_text is not None:
+            params["promptText"] = prompt_text
+        r = await self.send("Page.handleJavaScriptDialog", params, session_id=sid)
+        return r.get("result", {}).get("success", False)
 
     # —— 完整启动便捷方法 ——
 

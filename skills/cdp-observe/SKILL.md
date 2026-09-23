@@ -1,18 +1,22 @@
 ---
-name: cdp-observe
+name: cdp-debug
 description: >
-  需要实时查看/调试浏览器前端状态时使用——DOM/布局/渲染/预览表现、执行结果在界面的呈现、
-  任何「前端实际长什么样/为什么这样显示」的疑问。
-  通过 Chrome DevTools 协议（CDP）接管用户已运行的 Chrome，提供实时调试能力。
-  **不自行启动/重启浏览器**，但会在目标 tab 不存在时自动创建。
+  通过 CDP（Chrome DevTools Protocol）**直接控制用户已运行的 Chrome**，
+  支持实时调试、元素观察、截图、事件监听、以及点击/输入/键盘等自发操作。
+  场景：前端调试、运行态观察、自发 UI 交互、Network/Console/DOM 事件捕获。
+  **disambiguation**：本 skill 通过 CDP 协议连接用户 Chrome（非 Playwright 自动化），
+  不启动新浏览器、不跑独立 profile；与 browser_use（Playwright 驱动自动化）互斥。
+  优先用本 skill 当需要调试**用户正在用的 Chrome**、需要自发操作 + 观察、
+  或需要 CDP 事件监听时。
 ---
 
-# CDP 接管观察（Chrome）
+# CDP 接管调试（Chrome）
 
 ## 什么时候用
-- 看浏览器里真实的 DOM / 布局 / 渲染 / 交互状态
-- 任何前端应用的调试：组件渲染、元素状态、预览渲染、执行结果在界面的表现
-- 任何「前端实际长什么样 / 为什么这样显示」的疑问
+- 实时查看/调试前端状态：DOM / 布局 / 渲染 / Network / Console
+- 自发操作浏览器：点击按钮、填写表单、输入文本、按键触发交互
+- 运行态观察：用户在 Chrome 操作时 agent 捕获事件（Network/DOM/Page 事件缓冲）
+- 任务确定的 UI 交互场景：agent 自主完成操作，无需等待用户介入
 
 ## 前置（用户环境）
 用户 Chrome 需开启远程调试，二选一：
@@ -43,7 +47,7 @@ sleep 1
 ```
 > Chrome 重启后代理连接失效 → 重跑上面命令重启代理（会再弹一次授权）。
 
-**1. 所有命令走代理**：
+**1. 观察类命令**：
 ```bash
 # 执行 JS
 curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
@@ -67,40 +71,71 @@ curl -s http://127.0.0.1:9333/ -d '{"ensure":"<url子串>"}'
 curl -s http://127.0.0.1:9333/ -d '{"open":"<url>"}'
 ```
 
-> **目标页选择**：代理启动时自动 `ensure_tab` — 优先匹配 `CDP_TARGET` 环境变量指定的 URL 子串，然后找第一个非 chrome:// 页面；**所有 tab 都没有时自动创建 `about:blank`**，不再出现「没 tab 就退出」。启动后可随时 `{"ensure":"..."}` 或 `{"open":"..."}` 切换。
+> **目标页选择**：代理启动时自动 `ensure_tab` — 优先匹配 `CDP_TARGET` 环境变量指定的 URL 子串，然后找第一个非 chrome:// 页面；**所有 tab 都没有时自动创建 `about:blank`**。
 
-**单次 `cdp.py` 仅兜底**（代理不可用/无法重起时；每条命令各弹一次授权，优先 `multi` 一次连多条）：
+**2. 操作类命令（agent 自发交互）**：
 ```bash
-python <repo>/skills/cdp-observe/scripts/cdp.py detect          # 只读探测（不弹授权）
-python <repo>/skills/cdp-observe/scripts/cdp.py open '<url>'   # 新建 tab
-python <repo>/skills/cdp-observe/scripts/cdp.py list            # 列 tab
-python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
-python <repo>/skills/cdp-observe/scripts/cdp.py multi '<js1>' '<js2>' ...
-python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
-python <repo>/skills/cdp-observe/scripts/cdp.py navigate '<url>'
+# 点击 CSS selector 元素
+curl -s http://127.0.0.1:9333/ -d '{"click":"button.submit"}'
+
+# 右键点击
+curl -s http://127.0.0.1:9333/ -d '{"click":{"selector":"button","button":"right"}}'
+
+# 坐标点击
+curl -s http://127.0.0.1:9333/ -d '{"click":{"x":100,"y":200}}'
+
+# 悬停
+curl -s http://127.0.0.1:9333/ -d '{"hover":"input.search"}'
+
+# 聚焦元素并输入
+curl -s http://127.0.0.1:9333/ -d '{"type":{"selector":"input.search","text":"hello"}}'
+
+# 在当前焦点位置输入（比如先 click 聚焦，再 type）
+curl -s http://127.0.0.1:9333/ -d '{"type":"hello world"}'
+
+# 按键
+curl -s http://127.0.0.1:9333/ -d '{"press_key":"Enter"}'
+curl -s http://127.0.0.1:9333/ -d '{"press_key":"Tab"}'
+curl -s http://127.0.0.1:9333/ -d '{"press_key":"Escape"}'
+curl -s http://127.0.0.1:9333/ -d '{"press_key":"ArrowDown"}'
+
+# 处理 JS 对话框（alert/confirm/prompt）
+curl -s http://127.0.0.1:9333/ -d '{"handle_dialog":true}'
+curl -s http://127.0.0.1:9333/ -d '{"handle_dialog":{"accept":true,"promptText":"some input"}}'
 ```
 
-> python 需 aiohttp（`pip install aiohttp`）
-
-## 事件观察（内置）
-代理自动监听所有 CDP 事件并缓冲最近 200 条，随时拉取：
-
+**3. 事件观察（被动监听 + 缓冲）**：
 ```bash
-# 启用 CDP 事件域（如 Network、DOM、Page）
+# 启用 CDP 事件域（Network / DOM / Page / Runtime / Log）
 curl -s http://127.0.0.1:9333/ -d '{"enable":"Network"}'
+curl -s http://127.0.0.1:9333/ -d '{"enable":"DOM"}'
 
-# 触发页面操作（用户在浏览器操作，或用 {"navigate":"..."} 触发）
-
-# 拉取事件（可选 domain 过滤）
+# 触发操作 → 拉取事件
 curl -s http://127.0.0.1:9333/ -d '{"events":"Network"}'     # 只要 Network.*
 curl -s http://127.0.0.1:9333/ -d '{"events":1}'             # 全部事件
 curl -s http://127.0.0.1:9333/ -d '{"clear_events":1}'        # 清空
 ```
 
-**典型用法**：
-- **抓网络请求**：`{"enable":"Network"}` → 操作页面 → `{"events":"Network"}` 看 `requestWillBeSent` / `responseReceived`
-- **观察 DOM 变更**：`{"enable":"DOM"}` → 页面元素变化时 `documentUpdated` 事件
-- **抓页面加载事件**：`{"enable":"Page"}` → `loadEventFired` / `domContentEventFired`
+**典型自发操作流程**：
+```
+目标：在百度搜索 "hello" 并看结果
+  1. navigate → https://www.baidu.com
+  2. type → {"selector":"#kw","text":"hello"}
+  3. press_key → "Enter"
+  4. shot → 截图看结果
+  5. enable + events → Network 事件看搜索请求
+```
+
+**单次 `cdp.py` 仅兜底**（代理不可用/无法重起时）：
+```bash
+python <repo>/skills/cdp-observe/scripts/cdp.py detect
+python <repo>/skills/cdp-observe/scripts/cdp.py open '<url>'
+python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
+python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
+python <repo>/skills/cdp-observe/scripts/cdp.py navigate '<url>'
+```
+
+> python 需 aiohttp（`pip install aiohttp`）
 
 ## 常用观察 JS（通用，任意页面可用）
 - 页面信息（url/title）：
@@ -119,17 +154,25 @@ curl -s http://127.0.0.1:9333/ -d '{"clear_events":1}'        # 清空
   ```
 
 ## 约定 ⚠️
-- **调试一律走常驻代理长连接**：禁止直接调 `cdp.py` 单次命令（每条各弹一次授权）；仅代理不可用且无法重起时才兜底
-- **只观察 + 临时调试**：工具具备完整的 CDP 写能力，但调试场景下应优先用只读能力。临时 JS 注入在页面刷新后还原，不主动做持久化改动
+- **一律走常驻代理长连接**：每条单次命令各弹一次授权，仅代理不可用且无法重起时才兜底
 - **不自行启动浏览器**：Chrome 需已在运行（由用户启动）。代理会自动创建 tab，但不会启动整个浏览器进程
-- 需要改动用户浏览器持久内容（保存状态、改设置等）时，**先征得用户同意**
+- **操作 = 调试手段**：click/type/press_key 是为了复现 bug、触发调试场景、让页面进入目标状态——不是替代用户正常浏览。任务完成后停止操作，转为观察
+- **持久化改动先征得同意**：需要改动用户浏览器持久内容（保存状态、改设置、删数据等）时，先问
 
-## 文档索引
-- Chrome 远程调试配置：[`docs/setup.md`](../docs/setup.md)
-- 代理命令速查：[`docs/commands.md`](../docs/commands.md)
-- 项目 README（定位 + 可嵌入 API）：[`README.md`](../README.md)
+## 与 browser_use 的区别
+| | cdp-debug | browser_use |
+|---|---|---|
+| 连接方式 | CDP WebSocket 直连 | Playwright 驱动 |
+| 浏览器实例 | **用户已运行的 Chrome**（保留登录态/tab） | 自动启独立 Chromium（干净 profile） |
+| 事件监听 | ✅ enable 域 + 200 条事件缓冲 | ❌ 无 |
+| 运行态插入 | ✅ 就是为这个设计的 | ❌ 只能自己启新浏览器 |
+| 选择器 | CSS selector（标准 DOM） | CSS selector |
+| 适用场景 | 调试、观察、运行态复现 | 自动化任务、表单填写、无状态操作 |
+
+当需要操作**用户正在用的 Chrome**（有登录态、有 tab、有状态）时，选 cdp-debug。
+当需要一个**干净的、独立的、可任意控制**的浏览器实例（不怕污染、不怕打断）时，选 browser_use。
 
 ## 脚本
-`scripts/cdp_core.py` — 共享核心（CDP 类 + detect + select + **ensure_tab**）← 可嵌入
-`scripts/cdp.py` — CLI：detect / open / list / eval / multi / shot / navigate
-`scripts/cdp_proxy.py` — HTTP 代理：常驻连接 + ensure_tab 自动创建 + 事件缓冲
+`scripts/cdp_core.py` — 共享核心（CDP 类 + detect + select + ensure_tab + click/type/hover/press_key/handle_dialog）← 可嵌入
+`scripts/cdp.py` — CLI：detect / open / list / eval / shot / navigate
+`scripts/cdp_proxy.py` — HTTP 代理：常驻连接 + ensure_tab + 事件缓冲 + 操作命令
