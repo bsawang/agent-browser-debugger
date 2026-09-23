@@ -36,15 +36,28 @@ python <repo>/skills/cdp-observe/scripts/cdp.py detect
 > 常驻代理启动时连一次（弹一次 Allow），之后所有命令复用同一连接——**再小的调试也只用代理**。
 
 **0. 确保代理在跑**（顺序：先 `detect` 确认 Chrome 可调试 → 再查/起代理）：
+
+**跨平台（Python 兜底，推荐）**：
 ```bash
+python <repo>/skills/cdp-observe/scripts/cdp.py detect   # 快速探测（不弹授权）
+python <repo>/skills/cdp-observe/scripts/cdp.py ensure   # 代理探活 + 自动起（没跑就起，起时弹一次授权）
+```
+
+**或者手动分步（PowerShell 兼容）**：
+```powershell
 # 快速探测（不弹授权）
 python <repo>/skills/cdp-observe/scripts/cdp.py detect
 
-# 代理探活 + 自动起（没跑就起，起时弹一次授权）
-curl -s -m 2 http://127.0.0.1:9333/ -d '{"pages":1}' >/dev/null 2>&1 \
-  || (python <repo>/skills/cdp-observe/scripts/cdp_proxy.py 9333 > <repo>/_cdp_proxy.log 2>&1 &)
-sleep 1
+# 代理探活 — 没跑就起，起时弹一次授权
+try {
+  Invoke-WebRequest -Uri "http://127.0.0.1:9333/" -Method POST -ContentType "application/json" -Body '{"pages":1}' -TimeoutSec 2 | Out-Null
+} catch {
+  $log = Join-Path $PWD "_cdp_proxy.log"
+  Start-Process python -ArgumentList "<repo>/skills/cdp-observe/scripts/cdp_proxy.py","9333" -RedirectStandardOutput $log -RedirectStandardError $log -WindowStyle Hidden
+  Start-Sleep 2
+}
 ```
+
 > Chrome 重启后代理连接失效 → 重跑上面命令重启代理（会再弹一次授权）。
 
 **1. 观察类命令**：

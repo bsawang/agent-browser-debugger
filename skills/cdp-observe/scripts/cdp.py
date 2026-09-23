@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""CDP 单次命令行工具：detect / open / list / eval / multi / shot / navigate。
+"""CDP 单次命令行工具：detect / ensure / open / list / eval / multi / shot / navigate。
 
 用法（需 aiohttp）：
   python cdp.py detect             # 只读探测 Chrome 调试状态（不弹授权）
+  python cdp.py ensure             # 代理探活 + 自动起（跨平台，推荐）
   python cdp.py open '<url>'       # 新建 tab 打开 URL
   python cdp.py list               # 列出 page tab
   python cdp.py eval '<js>'        # 执行 JS
@@ -21,6 +22,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import sys
 
 from cdp_core import CDP, detect_ws_url, select_target, chrome_running
@@ -61,6 +63,46 @@ async def main():
             print(f"({len(tabs)} page tabs)")
         else:
             print("(inspect 模式：HTTP 不可用，需 attach 才能列 tab)")
+        return
+
+    # ensure：代理探活 + 自动起（跨平台）
+    if cmd == "ensure":
+        port = int(sys.argv[2]) if len(sys.argv) > 2 else 9333
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/",
+                                         data=json.dumps({"pages": 1}).encode(),
+                                         headers={"Content-Type": "application/json"},
+                                         method="POST")
+            resp = urllib.request.urlopen(req, timeout=2)
+            print(f"proxy on :{port} ok")
+            return
+        except Exception:
+            pass
+
+        # 代理没跑 → subprocess 起代理
+        proxy_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cdp_proxy.py")
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_cdp_proxy.log")
+        with open(log_path, "w") as log:
+            if os.name == "nt":
+                # Windows: CREATE_NO_WINDOW + 重定向
+                CREATE_NO_WINDOW = 0x08000000
+                subprocess.Popen(
+                    [sys.executable, proxy_script, str(port)],
+                    stdout=log, stderr=log,
+                    creationflags=CREATE_NO_WINDOW,
+                    close_fds=True,
+                )
+            else:
+                # Unix: 后台 + 重定向
+                subprocess.Popen(
+                    [sys.executable, proxy_script, str(port)],
+                    stdout=log, stderr=log,
+                    start_new_session=True,
+                )
+        import time
+        time.sleep(2)
+        print(f"proxy started on :{port} (log: {log_path})")
         return
 
     # 其他命令：需连接（弹一次授权）
