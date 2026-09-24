@@ -48,10 +48,18 @@ echo.
 REM ---- 3/3: MCP config ----
 echo [3/3] MCP config
 
-set "TRAE_MCP=%USERPROFILE%\.trae-cn\mcp.json"
-if exist "%USERPROFILE%\.trae-cn" (
-    python -c "import json,os,sys;p=sys.argv[1];d=json.load(open(p,encoding='utf-8')) if os.path.exists(p) else {};d.setdefault('mcpServers',{});d['mcpServers'].setdefault('cdp-debug',{'command':'cdp-mcp','args':[]});open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2,ensure_ascii=False))" "%TRAE_MCP%"
+REM TRAE: %APPDATA%\Trae CN\User\mcp.json
+set "TRAE_MCP=%APPDATA%\Trae CN\User\mcp.json"
+if exist "%APPDATA%\Trae CN\User" (
+    python -c "import json,os,sys;p=sys.argv[1];d=json.load(open(p,encoding='utf-8')) if os.path.exists(p) else {};d.setdefault('mcpServers',{});d['mcpServers']['cdp-debug']={'command':'cdp-mcp','args':[]};open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2,ensure_ascii=False))" "%TRAE_MCP%"
     echo       TRAE MCP: %TRAE_MCP%
+)
+
+REM Also write legacy path (some setups may still read it)
+set "TRAE_MCP2=%USERPROFILE%\.trae-cn\mcp.json"
+if exist "%USERPROFILE%\.trae-cn" (
+    python -c "import json,os,sys;p=sys.argv[1];d=json.load(open(p,encoding='utf-8')) if os.path.exists(p) else {};d.setdefault('mcpServers',{});d['mcpServers']['cdp-debug']={'command':'cdp-mcp','args':[]};open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2,ensure_ascii=False))" "%TRAE_MCP2%"
+    echo       TRAE MCP (legacy): %TRAE_MCP2%
 )
 
 set "CC_MCP=%USERPROFILE%\.claude.json"
