@@ -49,6 +49,20 @@ description: >
 | HTTP proxy（fallback） | proxy 进程活多久连多久 | 最多 1 次 | ✅ 持续 |
 | CLI `cdp`（兜底） | 单次命令，用完断开 | 每次都弹 | ❌ |
 
+## 探测去重：三层防御
+
+Chrome 调试状态探测有**三层递进去重**，避免无意义的重复工作和授权弹窗：
+
+| 层 | 方法 | 开销 | 弹授权？ |
+|---|---|---|---|
+| 1 | **进程检测**（`tasklist chrome.exe` / `pgrep`） | 零网络，毫秒级 | ❌ |
+| 2 | **只读探测**（`DevToolsActivePort` 文件 或 HTTP `/json/version`） | 只读，不连 WebSocket | ❌ |
+| 3 | **懒加载 + 双检锁**（MCP 内部 `_ensure_cdp()`） | 内存判断，已连过直接复用 | ❌ |
+
+实际流程：`detect_chrome` 只用层 1+2，**永远不弹授权**；第一次 tool call（如 `eval`）会走层 3 触发真实 WebSocket 连接（这是唯一可能弹授权的时刻）；之后所有 tool call 全走层 3，零开销、零弹窗。
+
+对比：browser_use 每次新建 Playwright 实例 → 新浏览器进程 → 无此问题，但代价是无法连接用户已运行的 Chrome。
+
 ---
 
 ## MCP server（推荐）
