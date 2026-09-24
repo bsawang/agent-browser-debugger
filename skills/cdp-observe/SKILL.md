@@ -21,171 +21,147 @@ description: >
 ## 前置（用户环境）
 用户 Chrome 需开启远程调试，二选一：
 1. **chrome://inspect/#remote-debugging** 勾选「Allow remote debugging for this browser instance」
-   （默认 profile 保留登录；每次**新连接**弹授权，用常驻代理避免）
-2. 或桌面「Chrome（Claude可接管）」快捷方式（传统 `--remote-debugging-port=9222 --user-data-dir`，无授权但独立 profile）
+   （默认 profile 保留登录；每次**新连接**弹授权）
+2. 或桌面「Chrome（可接管）」快捷方式（传统 `--remote-debugging-port=9222 --user-data-dir`，无授权但独立 profile）
 
-**检查可调试**（一行命令，不弹授权）：
-```bash
-python <repo>/skills/cdp-observe/scripts/cdp.py detect
-```
+## 两种连接方式
 
-> ⚠️ 坑：inspect 模式下 HTTP `/json/version` 是 **404**（此模式不走 HTTP 发现，改由 `DevToolsActivePort` 文件给 ws 地址）；`detect` 已同时覆盖两种模式。
+| | MCP server（推荐） | HTTP proxy（fallback） |
+|---|---|---|
+| 启动 | MCP 客户端自动拉起 stdio 进程 | 手动 `python cdp_proxy.py` |
+| 命令调用 | **MCP tool 直接调**（零 Shell、零临时脚本） | curl -s http://127.0.0.1:9333/ -d '...' |
+| 跨平台 | ✅ 纯 Python stdio | ❌ PowerShell curl 是别名，要用 curl.exe 或 Python |
+| 依赖 | `pip install mcp aiohttp` | `pip install aiohttp` |
+| 适用 | TRAE / Claude Code / Cursor 等支持 MCP 的 IDE | 无 MCP 支持的环境 / CLI 兜底 |
 
-## 工作流（⚠️ 硬性要求：一律走常驻代理长连接）
-> chrome://inspect 模式下每次**新 CDP 连接**弹一次授权。
-> 常驻代理启动时连一次（弹一次 Allow），之后所有命令复用同一连接——**再小的调试也只用代理**。
+---
 
-**0. 确保代理在跑**（顺序：先 `detect` 确认 Chrome 可调试 → 再查/起代理）：
+## MCP server（推荐）
 
-**跨平台（Python 兜底，推荐）**：
-```bash
-python <repo>/skills/cdp-observe/scripts/cdp.py detect   # 快速探测（不弹授权）
-python <repo>/skills/cdp-observe/scripts/cdp.py ensure   # 代理探活 + 自动起（没跑就起，起时弹一次授权）
-```
+### 配置到 IDE 的 MCP client
 
-**或者手动分步（PowerShell 兼容）**：
-```powershell
-# 快速探测（不弹授权）
-python <repo>/skills/cdp-observe/scripts/cdp.py detect
-
-# 代理探活 — 没跑就起，起时弹一次授权
-try {
-  Invoke-WebRequest -Uri "http://127.0.0.1:9333/" -Method POST -ContentType "application/json" -Body '{"pages":1}' -TimeoutSec 2 | Out-Null
-} catch {
-  $log = Join-Path $PWD "_cdp_proxy.log"
-  Start-Process python -ArgumentList "<repo>/skills/cdp-observe/scripts/cdp_proxy.py","9333" -RedirectStandardOutput $log -RedirectStandardError $log -WindowStyle Hidden
-  Start-Sleep 2
+```jsonc
+// TRAE: Settings → MCP → Edit config (mcp.json)
+// Claude Code: ~/.claude.json
+{
+  "mcpServers": {
+    "cdp-debug": {
+      "command": "python",
+      "args": ["<repo>/skills/cdp-observe/scripts/cdp_mcp.py"]
+    }
+  }
 }
 ```
 
-> Chrome 重启后代理连接失效 → 重跑上面命令重启代理（会再弹一次授权）。
+重启 IDE 后 agent 会在 tool 列表里看到 **16 个 cdp tools**，直接调用即可。
 
-**1. 观察类命令**：
+### 16 个 MCP tools
+
+| Tool | 说明 | 参数 |
+|---|---|---|
+| `detect_chrome` | 只读探测 Chrome 调试状态（不连 CDP、不弹授权） | 无 |
+| `list_pages` | 列出 Chrome 所有 page tab | 无 |
+| `ensure_tab` | 确保目标 tab 存在 — 有则切换，无则创建 | `url_substr?: str, create_url?: str` |
+| `open_tab` | 新建 tab 打开 URL 并 attach | `url: str` |
+| `close_tab` | 关闭指定 tab | `target_id: str` |
+| `navigate` | 导航 | `url: str` |
+| `eval` | 执行 JS | `expr: str` |
+| `take_screenshot` | 截图保存 PNG | `path: str` |
+| `click` | 点击（CSS selector 或坐标） | `selector?: str, x?: num, y?: num, button?: "left"\|"right"\|"middle"` |
+| `hover` | 悬停 | `selector?: str, x?: num, y?: num` |
+| `type_text` | 输入文本（可选先聚焦 selector） | `text: str, selector?: str` |
+| `press_key` | 按键 | `key: str, modifiers?: int` |
+| `handle_dialog` | 处理 JS 对话框 | `accept?: bool, prompt_text?: str` |
+| `enable_domain` | 启用 CDP 事件域（幂等） | `domain: str` |
+| `get_events` | 读事件缓冲（最近 200 条） | `domain?: str` |
+| `clear_events` | 清空事件缓冲 | 无 |
+
+### 典型 MCP 调用示例（agent 直接调 tool，不需要写代码）
+
+```
+detect_chrome → found=true → 继续
+list_pages → 看看有哪些 tab
+ensure_tab(url_substr="baidu", create_url="about:blank") → 目标 tab
+navigate(url="https://www.baidu.com") → 导航
+type_text(text="hello", selector="#kw") → 聚焦并输入
+press_key(key="Enter") → 搜索
+take_screenshot(path="H:/temp/result.png") → 截图
+enable_domain(domain="Network") → 启用事件
+get_events(domain="Network") → 读事件缓冲
+```
+
+---
+
+## HTTP proxy（fallback）
+
+### 启动代理
+
+```powershell
+# 探测 + 自动起（没跑就起，起时弹一次授权）
+python <repo>/skills/cdp-observe/scripts/cdp.py ensure
+```
+
+### 命令（跨平台兼容：用 Python 调 urllib，避免 PowerShell curl 别名坑）
+
 ```bash
-# 执行 JS
-curl -s http://127.0.0.1:9333/ -d '{"eval":"<js>"}'
+# eval
+python -c "import urllib.request,json; print(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9333/', data=json.dumps({'eval':'document.title'}).encode(), headers={'Content-Type':'application/json'})).read().decode())"
 
-# 截图
-curl -s http://127.0.0.1:9333/ -d '{"shot":"<png路径>"}'
+# shot
+python -c "import urllib.request,json; print(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9333/', data=json.dumps({'shot':'H:/temp/d.png'}).encode(), headers={'Content-Type':'application/json'})).read().decode())"
 
-# 导航
-curl -s http://127.0.0.1:9333/ -d '{"navigate":"<url>"}'
+# navigate
+python -c "import urllib.request,json; print(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9333/', data=json.dumps({'navigate':'https://www.baidu.com'}).encode(), headers={'Content-Type':'application/json'})).read().decode())"
 
-# 列 page tab
-curl -s http://127.0.0.1:9333/ -d '{"pages":1}'
+# click
+python -c "import urllib.request,json; print(urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:9333/', data=json.dumps({'click':'button.submit'}).encode(), headers={'Content-Type':'application/json'})).read().decode())"
 
-# 切换目标页（代理启动后可热切换，不用重连）
-curl -s http://127.0.0.1:9333/ -d '{"target":"<url子串>"}'
-
-# 确保目标 tab 存在 — 有则复用，无则创建新 tab
-curl -s http://127.0.0.1:9333/ -d '{"ensure":"<url子串>"}'
-
-# 显式新建 tab 打开 URL
-curl -s http://127.0.0.1:9333/ -d '{"open":"<url>"}'
+# type + press_key 同理
 ```
 
-> **目标页选择**：代理启动时自动 `ensure_tab` — 优先匹配 `CDP_TARGET` 环境变量指定的 URL 子串，然后找第一个非 chrome:// 页面；**所有 tab 都没有时自动创建 `about:blank`**。
+> ⚠️ PowerShell 里别用 `curl`（是 `Invoke-WebRequest` 别名），要么 `curl.exe`，要么上面的 Python 一行命令。
 
-**2. 操作类命令（agent 自发交互）**：
-```bash
-# 点击 CSS selector 元素
-curl -s http://127.0.0.1:9333/ -d '{"click":"button.submit"}'
+### 单次 CLI 兜底
 
-# 右键点击
-curl -s http://127.0.0.1:9333/ -d '{"click":{"selector":"button","button":"right"}}'
-
-# 坐标点击
-curl -s http://127.0.0.1:9333/ -d '{"click":{"x":100,"y":200}}'
-
-# 悬停
-curl -s http://127.0.0.1:9333/ -d '{"hover":"input.search"}'
-
-# 聚焦元素并输入
-curl -s http://127.0.0.1:9333/ -d '{"type":{"selector":"input.search","text":"hello"}}'
-
-# 在当前焦点位置输入（比如先 click 聚焦，再 type）
-curl -s http://127.0.0.1:9333/ -d '{"type":"hello world"}'
-
-# 按键
-curl -s http://127.0.0.1:9333/ -d '{"press_key":"Enter"}'
-curl -s http://127.0.0.1:9333/ -d '{"press_key":"Tab"}'
-curl -s http://127.0.0.1:9333/ -d '{"press_key":"Escape"}'
-curl -s http://127.0.0.1:9333/ -d '{"press_key":"ArrowDown"}'
-
-# 处理 JS 对话框（alert/confirm/prompt）
-curl -s http://127.0.0.1:9333/ -d '{"handle_dialog":true}'
-curl -s http://127.0.0.1:9333/ -d '{"handle_dialog":{"accept":true,"promptText":"some input"}}'
-```
-
-**3. 事件观察（被动监听 + 缓冲）**：
-```bash
-# 启用 CDP 事件域（Network / DOM / Page / Runtime / Log）
-curl -s http://127.0.0.1:9333/ -d '{"enable":"Network"}'
-curl -s http://127.0.0.1:9333/ -d '{"enable":"DOM"}'
-
-# 触发操作 → 拉取事件
-curl -s http://127.0.0.1:9333/ -d '{"events":"Network"}'     # 只要 Network.*
-curl -s http://127.0.0.1:9333/ -d '{"events":1}'             # 全部事件
-curl -s http://127.0.0.1:9333/ -d '{"clear_events":1}'        # 清空
-```
-
-**典型自发操作流程**：
-```
-目标：在百度搜索 "hello" 并看结果
-  1. navigate → https://www.baidu.com
-  2. type → {"selector":"#kw","text":"hello"}
-  3. press_key → "Enter"
-  4. shot → 截图看结果
-  5. enable + events → Network 事件看搜索请求
-```
-
-**单次 `cdp.py` 仅兜底**（代理不可用/无法重起时）：
 ```bash
 python <repo>/skills/cdp-observe/scripts/cdp.py detect
-python <repo>/skills/cdp-observe/scripts/cdp.py open '<url>'
 python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
 python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
-python <repo>/skills/cdp-observe/scripts/cdp.py navigate '<url>'
 ```
 
-> python 需 aiohttp（`pip install aiohttp`）
+---
 
-## 常用观察 JS（通用，任意页面可用）
-- 页面信息（url/title）：
-  ```js
-  JSON.stringify({url: location.href, title: document.title})
-  ```
-- 读元素文本：
-  ```js
-  (()=>{const e=document.querySelector('<选择器>'); return e?.innerText?.slice(0,500) ?? null;})()
-  ```
-- 元素尺寸/位置/样式：
-  ```js
-  (()=>{const e=document.querySelector('<选择器>'); if(!e) return null;
-   const s=getComputedStyle(e), r=e.getBoundingClientRect();
-   return JSON.stringify({w:r.width,h:r.height,x:r.x,y:r.y,display:s.display});})()
-  ```
+## 常用观察 JS（eval 用）
+
+- 页面信息：`JSON.stringify({url: location.href, title: document.title})`
+- 读元素文本：`(()=>{const e=document.querySelector('<选择器>'); return e?.innerText?.slice(0,500) ?? null;})()`
+- 元素尺寸/位置/样式：`(()=>{const e=document.querySelector('<选择器>'); if(!e) return null; const s=getComputedStyle(e), r=e.getBoundingClientRect(); return JSON.stringify({w:r.width,h:r.height,x:r.x,y:r.y,display:s.display});})()`
 
 ## 约定 ⚠️
-- **一律走常驻代理长连接**：每条单次命令各弹一次授权，仅代理不可用且无法重起时才兜底
-- **不自行启动浏览器**：Chrome 需已在运行（由用户启动）。代理会自动创建 tab，但不会启动整个浏览器进程
-- **操作 = 调试手段**：click/type/press_key 是为了复现 bug、触发调试场景、让页面进入目标状态——不是替代用户正常浏览。任务完成后停止操作，转为观察
-- **持久化改动先征得同意**：需要改动用户浏览器持久内容（保存状态、改设置、删数据等）时，先问
+
+- **MCP 优先**：IDE 支持 MCP 时，一律走 MCP tool（零 Shell、零临时脚本）。无 MCP 时走 HTTP proxy。
+- **不自行启动浏览器**：Chrome 需已在运行。会自动创建 tab，但不会启动浏览器进程。
+- **操作 = 调试手段**：click/type/press_key 是为了复现 bug、触发调试场景——不是替代用户正常浏览。
+- **持久化改动先征得同意**：需要改动用户浏览器持久内容时先问。
 
 ## 与 browser_use 的区别
+
 | | cdp-debug | browser_use |
 |---|---|---|
 | 连接方式 | CDP WebSocket 直连 | Playwright 驱动 |
 | 浏览器实例 | **用户已运行的 Chrome**（保留登录态/tab） | 自动启独立 Chromium（干净 profile） |
 | 事件监听 | ✅ enable 域 + 200 条事件缓冲 | ❌ 无 |
 | 运行态插入 | ✅ 就是为这个设计的 | ❌ 只能自己启新浏览器 |
-| 选择器 | CSS selector（标准 DOM） | CSS selector |
 | 适用场景 | 调试、观察、运行态复现 | 自动化任务、表单填写、无状态操作 |
 
-当需要操作**用户正在用的 Chrome**（有登录态、有 tab、有状态）时，选 cdp-debug。
-当需要一个**干净的、独立的、可任意控制**的浏览器实例（不怕污染、不怕打断）时，选 browser_use。
+需要操作**用户正在用的 Chrome** → cdp-debug。
+需要**干净独立可任意控制**的浏览器 → browser_use。
 
 ## 脚本
-`scripts/cdp_core.py` — 共享核心（CDP 类 + detect + select + ensure_tab + click/type/hover/press_key/handle_dialog）← 可嵌入
-`scripts/cdp.py` — CLI：detect / open / list / eval / shot / navigate
-`scripts/cdp_proxy.py` — HTTP 代理：常驻连接 + ensure_tab + 事件缓冲 + 操作命令
+
+| 文件 | 说明 |
+|---|---|
+| `scripts/cdp_core.py` | 共享核心（CDP 类 + detect + click/type/hover/press_key/handle_dialog）← 可嵌入 |
+| `scripts/cdp_mcp.py` | **MCP server**（16 tools，stdio 协议，推荐入口） |
+| `scripts/cdp_proxy.py` | HTTP 9333 代理（fallback，常驻长连接） |
+| `scripts/cdp.py` | CLI：detect / open / list / eval / shot / navigate |
