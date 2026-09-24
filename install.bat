@@ -9,11 +9,11 @@ echo   cdp-debug installer
 echo ========================================
 echo.
 
-set "SRC=%~dp0skills\cdp-observe"
+set "SRC=%cd%"
 
 REM ---- 1/3: pip install ----
 echo [1/3] pip install -e .
-python -m pip install -e "%SRC%\scripts"
+python -m pip install -e "%SRC%"
 echo       OK: cdp-mcp / cdp-proxy / cdp in PATH
 echo.
 
@@ -25,9 +25,8 @@ set "TRAE_SKILL_DIR=%USERPROFILE%\.trae-cn\skills\%SKILL_NAME%"
 if exist "%USERPROFILE%\.trae-cn" (
     if not exist "%TRAE_SKILL_DIR%" mkdir "%TRAE_SKILL_DIR%"
     if not exist "%TRAE_SKILL_DIR%\scripts" mkdir "%TRAE_SKILL_DIR%\scripts"
-    copy /Y "%SRC%\SKILL.md" "%TRAE_SKILL_DIR%\" >nul
-    copy /Y "%SRC%\scripts\*.py" "%TRAE_SKILL_DIR%\scripts\" >nul
-    copy /Y "%SRC%\scripts\pyproject.toml" "%TRAE_SKILL_DIR%\scripts\" >nul
+    copy /Y "%SRC%skill\SKILL.md" "%TRAE_SKILL_DIR%\" >nul
+    copy /Y "%SRC%*.py" "%TRAE_SKILL_DIR%\scripts\" >nul
     echo       TRAE skill: %TRAE_SKILL_DIR%
 ) else (
     echo       TRAE: skip [no .trae-cn dir]
@@ -37,9 +36,8 @@ set "CC_SKILL_DIR=%USERPROFILE%\.claude\skills\%SKILL_NAME%"
 if exist "%USERPROFILE%\.claude" (
     if not exist "%CC_SKILL_DIR%" mkdir "%CC_SKILL_DIR%"
     if not exist "%CC_SKILL_DIR%\scripts" mkdir "%CC_SKILL_DIR%\scripts"
-    copy /Y "%SRC%\SKILL.md" "%CC_SKILL_DIR%\" >nul
-    copy /Y "%SRC%\scripts\*.py" "%CC_SKILL_DIR%\scripts\" >nul
-    copy /Y "%SRC%\scripts\pyproject.toml" "%CC_SKILL_DIR%\scripts\" >nul
+    copy /Y "%SRC%skill\SKILL.md" "%CC_SKILL_DIR%\" >nul
+    copy /Y "%SRC%*.py" "%CC_SKILL_DIR%\scripts\" >nul
     echo       Claude Code skill: %CC_SKILL_DIR%
 ) else (
     echo       Claude Code: skip [no .claude dir]

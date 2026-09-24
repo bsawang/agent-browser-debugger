@@ -2,7 +2,7 @@
 name = "cdp-debug"
 version = "0.1.0"
 description = "CDP 调试工具集 — MCP server + HTTP proxy + CLI，连接用户已运行的 Chrome 做运行态调试"
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "aiohttp>=3.9",

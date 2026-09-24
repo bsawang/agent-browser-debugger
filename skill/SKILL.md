@@ -43,11 +43,12 @@ description: >
 ```jsonc
 // TRAE: Settings → MCP → Edit config (mcp.json)
 // Claude Code: ~/.claude.json
+// 如果用 install.bat 一键安装过，这步自动完成
 {
   "mcpServers": {
     "cdp-debug": {
-      "command": "python",
-      "args": ["<repo>/skills/cdp-observe/scripts/cdp_mcp.py"]
+      "command": "cdp-mcp",
+      "args": []
     }
   }
 }
@@ -97,8 +98,11 @@ get_events(domain="Network") → 读事件缓冲
 ### 启动代理
 
 ```powershell
-# 探测 + 自动起（没跑就起，起时弹一次授权）
-python <repo>/skills/cdp-observe/scripts/cdp.py ensure
+# detect（不弹授权）
+cdp detect
+
+# 起 proxy（fallback 用）
+cdp-proxy 9333
 ```
 
 ### 命令（跨平台兼容：用 Python 调 urllib，避免 PowerShell curl 别名坑）
@@ -124,9 +128,9 @@ python -c "import urllib.request,json; print(urllib.request.urlopen(urllib.reque
 ### 单次 CLI 兜底
 
 ```bash
-python <repo>/skills/cdp-observe/scripts/cdp.py detect
-python <repo>/skills/cdp-observe/scripts/cdp.py eval '<js>'
-python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
+cdp detect
+cdp eval '<js>'
+cdp shot <文件.png>
 ```
 
 ---
@@ -161,7 +165,9 @@ python <repo>/skills/cdp-observe/scripts/cdp.py shot <文件.png>
 
 | 文件 | 说明 |
 |---|---|
-| `scripts/cdp_core.py` | 共享核心（CDP 类 + detect + click/type/hover/press_key/handle_dialog）← 可嵌入 |
-| `scripts/cdp_mcp.py` | **MCP server**（16 tools，stdio 协议，推荐入口） |
-| `scripts/cdp_proxy.py` | HTTP 9333 代理（fallback，常驻长连接） |
-| `scripts/cdp.py` | CLI：detect / open / list / eval / shot / navigate |
+| `cdp_core.py` | 共享核心（CDP 类 + detect + click/type/hover/press_key/handle_dialog）← 可嵌入 |
+| `cdp_mcp.py` | **MCP server**（16 tools，stdio 协议，推荐入口） |
+| `cdp_proxy.py` | HTTP 9333 代理（fallback，常驻长连接） |
+| `cdp.py` | CLI：detect / open / list / eval / shot / navigate |
+
+安装：`pip install -e .`（repo 根）。之后 `cdp-mcp` / `cdp-proxy` / `cdp` 直接进 PATH。
