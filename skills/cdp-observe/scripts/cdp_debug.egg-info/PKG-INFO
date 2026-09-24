@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: cdp-debug
-Version: 0.1.0
-Summary: CDP 调试工具集 — MCP server + HTTP proxy + CLI，连接用户已运行的 Chrome 做运行态调试
-Requires-Python: >=3.10
-Description-Content-Type: text/markdown
-Requires-Dist: aiohttp>=3.9
-Requires-Dist: mcp>=1.0

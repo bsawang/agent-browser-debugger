@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+egg-info/
 _cdp_proxy.log
 AGENT-LOGGER.md
