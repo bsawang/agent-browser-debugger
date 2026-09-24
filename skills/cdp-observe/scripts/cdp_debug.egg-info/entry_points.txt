@@ -1,0 +1,4 @@
+[console_scripts]
+cdp = cdp:main
+cdp-mcp = cdp_mcp:main
+cdp-proxy = cdp_proxy:main
