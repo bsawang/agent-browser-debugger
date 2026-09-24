@@ -1,4 +1,0 @@
-cdp
-cdp_core
-cdp_mcp
-cdp_proxy
