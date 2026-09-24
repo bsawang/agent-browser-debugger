@@ -266,6 +266,11 @@ def clear_events() -> bool:
     return True
 
 
-if __name__ == "__main__":
+def main():
+    """CLI entry point — also used by pyproject.toml [project.scripts]."""
     print("[cdp-mcp] starting...", file=sys.stderr)
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

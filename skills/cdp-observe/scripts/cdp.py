@@ -46,7 +46,7 @@ def print_help():
 启动后 chrome://inspect → 勾选 Allow remote debugging""")
 
 
-async def main():
+async def _async_main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
 
     # detect：只读探测，不连 ws，不弹授权
@@ -159,5 +159,10 @@ async def main():
         await c.close()
 
 
+def main():
+    """同步入口 — 供 pyproject.toml [project.scripts] cdp=cdp:main 使用。"""
+    asyncio.run(_async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

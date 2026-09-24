@@ -69,7 +69,7 @@ def _on_any_event(method: str, params: dict):
     _event_buffer.append({"method": method, "params": params})
 
 
-async def main():
+async def _async_main():
     ws_url, mode, _ = await detect_ws_url()
 
     if not ws_url:
@@ -262,5 +262,10 @@ async def main():
     await asyncio.Event().wait()
 
 
+def main():
+    """同步入口 — 供 pyproject.toml [project.scripts] cdp-proxy=cdp_proxy:main 使用。"""
+    asyncio.run(_async_main())
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

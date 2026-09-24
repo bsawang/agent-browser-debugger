@@ -1,0 +1,23 @@
+[project]
+name = "cdp-debug"
+version = "0.1.0"
+description = "CDP 调试工具集 — MCP server + HTTP proxy + CLI，连接用户已运行的 Chrome 做运行态调试"
+readme = "../../README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp>=3.9",
+    "mcp>=1.0",
+]
+
+[project.scripts]
+cdp-mcp = "cdp_mcp:main"
+cdp-proxy = "cdp_proxy:main"
+cdp = "cdp:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 扁平模块，不打包成子包
+py-modules = ["cdp_core", "cdp_mcp", "cdp_proxy", "cdp"]
