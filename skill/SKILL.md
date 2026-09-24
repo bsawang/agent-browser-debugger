@@ -34,6 +34,21 @@ description: >
 | 依赖 | `pip install mcp aiohttp` | `pip install aiohttp` |
 | 适用 | TRAE / Claude Code / Cursor 等支持 MCP 的 IDE | 无 MCP 支持的环境 / CLI 兜底 |
 
+## 连接模型：长连接（默认）
+
+**MCP server 和 HTTP proxy 都是长连接设计**——进程启动时建立 CDP WebSocket，之后所有操作复用同一条连接。这和 CLI `cdp eval`（短连接，每次 detect → connect → 用完丢）完全不同。
+
+长连接的实际好处：
+- **chrome://inspect 模式只弹一次授权**：后续所有 tool call 免授权
+- **事件持续缓冲**：`enable_domain` 一次启用，之后事件自动进缓冲，随时 `get_events` 读取
+- **零重复握手**：省掉每次 `GET /json/version` + WebSocket 握手开销
+
+| 模式 | 连接生命周期 | 授权弹窗 | 事件缓冲 |
+|---|---|---|---|
+| **MCP server（推荐）** | 进程活多久连多久 | 最多 1 次 | ✅ 持续 |
+| HTTP proxy（fallback） | proxy 进程活多久连多久 | 最多 1 次 | ✅ 持续 |
+| CLI `cdp`（兜底） | 单次命令，用完断开 | 每次都弹 | ❌ |
+
 ---
 
 ## MCP server（推荐）
