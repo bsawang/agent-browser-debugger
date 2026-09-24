@@ -24,9 +24,8 @@ set "SKILL_NAME=cdp-debug"
 set "TRAE_SKILL_DIR=%USERPROFILE%\.trae-cn\skills\%SKILL_NAME%"
 if exist "%USERPROFILE%\.trae-cn" (
     if not exist "%TRAE_SKILL_DIR%" mkdir "%TRAE_SKILL_DIR%"
-    if not exist "%TRAE_SKILL_DIR%\scripts" mkdir "%TRAE_SKILL_DIR%\scripts"
     copy /Y "%SRC%skill\SKILL.md" "%TRAE_SKILL_DIR%\" >nul
-    copy /Y "%SRC%*.py" "%TRAE_SKILL_DIR%\scripts\" >nul
+    copy /Y "%SRC%*.py" "%TRAE_SKILL_DIR%\" >nul
     echo       TRAE skill: %TRAE_SKILL_DIR%
 ) else (
     echo       TRAE: skip [no .trae-cn dir]
@@ -35,9 +34,8 @@ if exist "%USERPROFILE%\.trae-cn" (
 set "CC_SKILL_DIR=%USERPROFILE%\.claude\skills\%SKILL_NAME%"
 if exist "%USERPROFILE%\.claude" (
     if not exist "%CC_SKILL_DIR%" mkdir "%CC_SKILL_DIR%"
-    if not exist "%CC_SKILL_DIR%\scripts" mkdir "%CC_SKILL_DIR%\scripts"
     copy /Y "%SRC%skill\SKILL.md" "%CC_SKILL_DIR%\" >nul
-    copy /Y "%SRC%*.py" "%CC_SKILL_DIR%\scripts\" >nul
+    copy /Y "%SRC%*.py" "%CC_SKILL_DIR%\" >nul
     echo       Claude Code skill: %CC_SKILL_DIR%
 ) else (
     echo       Claude Code: skip [no .claude dir]
