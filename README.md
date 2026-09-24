@@ -73,7 +73,10 @@ pip install -e .
 用户 Chrome 需开启远程调试，二选一：
 
 1. **chrome://inspect/#remote-debugging** → 勾选 "Allow remote debugging"（保留默认 profile + 登录态）
-2. 桌面快捷方式加参数 `--remote-debugging-port=9222`（独立 profile，无授权弹窗）
+2. 桌面快捷方式加参数 `--remote-debugging-port=9222 --user-data-dir=<独立目录>`（无授权弹窗但独立 profile）
+
+> ⚠️ Chrome 136+（2025-04）安全变更：`--remote-debugging-port` 在**默认数据目录**下被静默忽略（防攻击者附加到真实 profile 窃取 Cookie）。
+> 方式 2 必须配 `--user-data-dir` 指向非默认目录，或直接用方式 1。
 
 验证（不弹授权）：
 
