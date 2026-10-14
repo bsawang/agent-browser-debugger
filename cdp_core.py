@@ -383,15 +383,96 @@ class CDP:
             return {"_desc": res["description"][:500]}
         return None
 
-    async def shot(self, path: str, session_id: str | None = None) -> str:
-        await self.send("Page.enable", session_id=session_id or self._session)
-        r = await self.send(
-            "Page.captureScreenshot",
-            {"format": "png"},
-            session_id=session_id or self._session,
-        )
+    async def shot(
+        self,
+        path: str,
+        session_id: str | None = None,
+        *,
+        fmt: str | None = None,
+        quality: int = 62,
+        max_width: int | None = None,
+        timeout: float = 6.0,
+    ) -> str:
+        """截图并落盘 —— 防卡死 + 可选压缩。
+
+        防卡死背景（2026-10-14 实测，视频播放页复现）：
+          Page.captureScreenshot 正常 0.1~0.3s，但在后台标签/视频合成表面上
+          偶发永不返回（Chrome 等待下一合成帧），而 send() 本身无超时 →
+          调用方无限挂起。此处用 wait_for 限时 + 两级兜底：
+          ① fromSurface:false 走 DOM 层捕获（不等视频表面，视频帧可能黑屏，
+             但布局核查场景完全够用）② Page.bringToFront 强制产帧后再试。
+
+        压缩：fmt=jpeg 时 CDP 直接出 JPEG；max_width 给定时用 Pillow 等比
+        缩限（默认 None，保持历史调用方行为不变）。fmt=None 按扩展名推断。
+        """
+        sid = session_id or self._session
+        try:
+            await asyncio.wait_for(self.send("Page.enable", session_id=sid), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+
+        # 格式推断：显式参数 > 扩展名 > 默认 jpeg
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        fmt = (fmt or ext or "jpeg").replace("jpg", "jpeg")
+        if fmt not in ("jpeg", "png", "webp"):
+            fmt = "jpeg"
+
+        async def _capture(params: dict) -> bytes | None:
+            try:
+                r = await asyncio.wait_for(
+                    self.send("Page.captureScreenshot", params, session_id=sid),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                return None
+            if r.get("error"):
+                raise RuntimeError(f"Page.captureScreenshot 返回错误: {r['error']}")
+            return base64.b64decode(r["result"]["data"])
+
+        base_params = {"format": fmt}
+        if fmt == "jpeg":
+            base_params["quality"] = quality
+
+        data = await _capture(dict(base_params))
+        if data is None:
+            # 兜底①：DOM 层捕获，绕开视频/合成表面等帧
+            data = await _capture({**base_params, "fromSurface": False})
+        if data is None:
+            # 兜底②：置前标签强制合成新帧，再走正常表面捕获
+            try:
+                await asyncio.wait_for(self.send("Page.bringToFront", session_id=sid), timeout=3)
+                await asyncio.sleep(0.2)
+            except asyncio.TimeoutError:
+                pass
+            data = await _capture(dict(base_params))
+        if data is None:
+            raise TimeoutError(
+                f"Page.captureScreenshot 连续超时（surface/fromSurface/bringToFront 均未返回，{timeout}s×3）"
+            )
+
+        # 限宽缩放（仅在要求时；Pillow 缺失则原样落盘，不阻塞截图主流程）
+        if max_width and max_width > 0:
+            try:
+                import io
+                from PIL import Image
+
+                im = Image.open(io.BytesIO(data))
+                if im.width > max_width:
+                    im = im.convert("RGB") if fmt == "jpeg" else im
+                    nh = round(im.height * max_width / im.width)
+                    im = im.resize((max_width, nh), Image.LANCZOS)
+                buf = io.BytesIO()
+                save_fmt = "JPEG" if fmt == "jpeg" else fmt.upper()
+                save_kw = {"quality": quality, "optimize": True} if fmt == "jpeg" else {}
+                im.save(buf, save_fmt, **save_kw)
+                data = buf.getvalue()
+            except ImportError:
+                pass
+
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
         with open(path, "wb") as f:
-            f.write(base64.b64decode(r["result"]["data"]))
+            f.write(data)
         return path
 
     async def navigate(self, url: str, session_id: str | None = None):

@@ -36,11 +36,26 @@ _lock = asyncio.Lock()
 
 
 async def _ensure_cdp():
-    """懒加载：第一次 tool call 时才连 Chrome。后续复用。"""
+    """懒加载 + 自动重连：每次 tool call 前检查 WS 是否还活着，Chrome 关了自动 detect + 重建。"""
     global _cdp
     async with _lock:
+        # 已经有 CDP 对象 → 检查 WS 健康度
         if _cdp is not None:
-            return _cdp
+            ws_ok = False
+            try:
+                # aiohttp ClientWebSocketResponse.closed → bool，True=已关闭
+                ws_ok = not getattr(_cdp.ws, "closed", True)
+            except Exception:
+                ws_ok = False
+            if ws_ok:
+                return _cdp
+            # WS 断了 → 清理旧对象 + 重连
+            try:
+                await _cdp.close()
+            except Exception:
+                pass
+            _cdp = None
+
         ws_url, mode, _ = await detect_ws_url()
         if not ws_url:
             if chrome_running():
@@ -99,13 +114,25 @@ async def eval(expr: str) -> dict:
 
 
 @mcp.tool()
-async def take_screenshot(path: str) -> str:
-    """截图并保存为 PNG。
+async def take_screenshot(
+    path: str,
+    max_width: int = 1280,
+    quality: int = 62,
+    fmt: str = "jpeg",
+) -> str:
+    """截图并保存。默认 1280 宽 JPEG q62（~30-60KB，供模型识图秒回），
+    内置 6s 超时 + fromSurface/置前后重试，永不无限挂起。
 
-    Args: path — 本地保存路径，如 "debug.png" 或 "H:/temp/shot.png"
+    Args:
+      path — 保存路径，建议 .jpg，如 "H:/temp/shot.jpg"
+      max_width — 等比缩限宽度（默认1280；传0保持原始分辨率）
+      quality — JPEG 质量 1-100（默认62）
+      fmt — "jpeg"(默认) / "png"(无损，体积大、识图慢，仅像素级排查时用)
     """
     c = await _ensure_cdp()
-    return await c.shot(path)
+    return await c.shot(
+        path, fmt=fmt, quality=quality, max_width=max_width or None
+    )
 
 
 # —— 页面管理 ——
