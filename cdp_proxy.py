@@ -107,6 +107,10 @@ async def _async_main():
             return web.json_response({"err": "bad json"})
 
         try:
+            # 连接已死（Chrome 退出/命令超时）→ 明确指引，不把裸栈丢给调用方
+            if not c.alive:
+                return web.json_response({"err": "CDP 连接已断开（Chrome 退出或调试被关闭）。proxy 不自动重连：重启 cdp-proxy，或改用 MCP（自动重连+恢复事件域）"})
+
             # detect：只读探测，不走 CDP 连接
             if "detect" in data:
                 ws_url2, mode2, tabs2 = await detect_ws_url()

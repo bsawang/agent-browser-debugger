@@ -34,6 +34,23 @@ import aiohttp
 
 DEFAULT_PORT = 9222
 
+# 超时基线（秒）：命令默认 20s、连接握手 10s、ping 3s（对齐 CDP 工具链通行值）
+DEFAULT_COMMAND_TIMEOUT = 20.0
+CONNECT_TIMEOUT = 10.0
+PING_TIMEOUT = 3.0
+
+
+class CDPError(Exception):
+    """CDP 客户端基础异常。"""
+
+
+class CDPTimeoutError(CDPError):
+    """命令在 deadline 内无响应。连接已被标记失效，下一次调用会自动重连。"""
+
+
+class CDPDisconnectedError(CDPError):
+    """WebSocket 已断开（Chrome 退出 / 调试被关闭 / 网络中断）。"""
+
 # Windows virtual key codes (subset for press_key)
 _KEY_CODE_MAP = {
     "Enter": 13, "Tab": 9, "Escape": 27, "Backspace": 8, "Delete": 46,
@@ -169,11 +186,49 @@ class CDP:
         self._current_target_id: str | None = None   # 当前 self._session 对应的 targetId
         self._lock = asyncio.Lock()                  # 串行化 attach/enable（防并发竞态）
 
+        # —— 连接生命状态 ——
+        # _dead=True：recv 协程已退出 或 有命令超时（半开连接），连接不可信，必须重建
+        self._dead: bool = False
+        self._closing: bool = False                  # 主动 close() 置位 → 不触发断开回调
+        self._on_disconnect_cb = None                # 连接异常断开时的同步回调（供上层触发重连）
+
+    @property
+    def alive(self) -> bool:
+        """连接是否可信：WS 对象在、未关闭、recv 协程未退出、未被超时标记死亡。"""
+        return (
+            self.ws is not None
+            and not getattr(self.ws, "closed", True)
+            and not self._dead
+            and self._recv_task is not None
+            and not self._recv_task.done()
+        )
+
+    @property
+    def current_target(self) -> dict:
+        """当前 attach 目标摘要（供状态查询）。"""
+        return {"targetId": self._current_target_id, "sessionId": self._session}
+
+    def on_disconnect(self, cb):
+        """注册异常断开回调（同步函数，无参数）。主动 close() 不触发。"""
+        self._on_disconnect_cb = cb
+
     # —— 连接生命周期 ——
 
     async def connect(self, ws_url: str):
         self._http_session = aiohttp.ClientSession()
-        self.ws = await self._http_session.ws_connect(ws_url)
+        try:
+            self.ws = await asyncio.wait_for(
+                self._http_session.ws_connect(ws_url), timeout=CONNECT_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            await self._http_session.close()
+            self._http_session = None
+            raise CDPTimeoutError(f"CDP WebSocket 握手 {CONNECT_TIMEOUT}s 超时：{ws_url}")
+        except Exception:
+            await self._http_session.close()
+            self._http_session = None
+            raise
+        self._dead = False
 
     async def start(self):
         """启动后台接收协程，必须在 connect() 之后调用。"""
@@ -192,6 +247,19 @@ class CDP:
                 self._dispatch(data)
         except Exception:
             pass
+        finally:
+            self._dead = True
+            # 唤醒所有等待者，不让它们各自等到 20s 超时
+            for fut in list(self._pending.values()):
+                if not fut.done():
+                    fut.set_exception(CDPDisconnectedError("CDP WebSocket 已断开（Chrome 退出或调试被关闭）"))
+            self._pending.clear()
+            # 主动 close() 不回调；对端关闭/异常退出才通知上层重连
+            if not self._closing and self._on_disconnect_cb:
+                try:
+                    self._on_disconnect_cb()
+                except Exception:
+                    pass
 
     def _dispatch(self, msg: dict):
         if not isinstance(msg, dict):
@@ -212,6 +280,7 @@ class CDP:
                     pass
 
     async def close(self):
+        self._closing = True
         if self._recv_task:
             self._recv_task.cancel()
             try:
@@ -231,19 +300,50 @@ class CDP:
 
     # —— 核心 send ——
 
-    async def send(self, method: str, params: dict | None = None, session_id: str | None = None) -> dict:
-        """发送 CDP 命令，等待响应。"""
-        self._nid += 1
-        fut = asyncio.Future()
-        self._pending[self._nid] = fut
+    async def send(self, method: str, params: dict | None = None, session_id: str | None = None,
+                  *, timeout: float = DEFAULT_COMMAND_TIMEOUT) -> dict:
+        """发送 CDP 命令，等待响应。
 
-        msg: dict = {"id": self._nid, "method": method, "params": params or {}}
-        sid = session_id or self._session
+        timeout：单命令 deadline（默认 20s）。超时后：
+          ① 立即抛 CDPTimeoutError（不再无限挂起）
+          ② 连接标记 _dead（无响应大概率是半开/卡死，不可再信），下次调用自动重连
+        """
+        self._nid += 1
+        mid = self._nid
+        fut = asyncio.Future()
+        self._pending[mid] = fut
+
+        msg: dict = {"id": mid, "method": method, "params": params or {}}
+        # None=用当前 page session（默认）；显式 ""=浏览器级命令（Browser.*/Target.*，不带 sessionId）；
+        # 非空字符串=指定 session
+        sid = self._session if session_id is None else session_id
         if sid:
             msg["sessionId"] = sid
 
-        await self.ws.send_json(msg)
-        return await fut
+        try:
+            await self.ws.send_json(msg)
+        except Exception as e:
+            self._pending.pop(mid, None)
+            self._dead = True
+            raise CDPDisconnectedError(f"CDP 发送失败（连接已断）：{e}") from e
+
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(mid, None)
+            self._dead = True
+            raise CDPTimeoutError(
+                f"CDP 命令 {method} {timeout}s 无响应，连接已标记失效（下一次调用将自动重连后重试）"
+            )
+
+    async def ping(self, *, timeout: float = PING_TIMEOUT) -> bool:
+        """轻量健康探测（Browser.getVersion，3s deadline）。
+
+        与只看 ws.closed 的区别：能识别「TCP 没断但 Chrome 已不响应」的半开连接。
+        存活返回 True；任何失败抛 CDPError（CDPTimeoutError/CDPDisconnectedError）。
+        """
+        await self.send("Browser.getVersion", timeout=timeout)
+        return True
 
     # —— 事件监听 ——
 
